@@ -14,12 +14,15 @@ import { selectorArgs } from './video-formats';
 import { getDownloadDir } from './download-dir';
 
 const IS_WIN = process.platform === 'win32';
+const IS_MAC = process.platform === 'darwin';
 const EXE = IS_WIN ? '.exe' : '';
-// Binário do yt-dlp certo pra cada SO. No macOS o yt-dlp_macos é universal (Apple Silicon
-// + Intel) — o .exe que baixávamos antes nem roda lá.
+// Binário do yt-dlp certo pra cada SO. No macOS vai o yt-dlp_macos.zip (universal: Apple
+// Silicon + Intel), que é a PASTA já desempacotada: o yt-dlp_macos "onefile" se desempacota
+// a CADA execução e o macOS escaneia os arquivos novos — medido ~16s por chamada num Mac
+// Intel (o teste de 10s achava que estava corrompido), contra ~2,5s da pasta.
 function ytDlpAsset(): string {
   if (IS_WIN) return 'yt-dlp.exe';
-  if (process.platform === 'darwin') return 'yt-dlp_macos';
+  if (IS_MAC) return 'yt-dlp_macos.zip';
   return process.arch === 'arm64' ? 'yt-dlp_linux_aarch64' : 'yt-dlp_linux';
 }
 const YTDLP_URL = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${ytDlpAsset()}`;
@@ -133,25 +136,111 @@ async function maybeAutoUpdate(bin: string, onStatus?: (msg: string) => void): P
 // Valida o yt-dlp recém-baixado: precisa RODAR e imprimir uma versão (yyyy.mm.dd) e ter
 // tamanho mínimo — pega download corrompido/parcial. NÃO fixamos checksum/hash: o yt-dlp se
 // auto-atualiza (`-U`), então um hash fixo quebraria sozinho a cada release.
-function validateYtDlp(bin: string): Promise<boolean> {
+// Devolve a versão (null = não rodou).
+function ytDlpVersion(bin: string): Promise<string | null> {
   return new Promise((resolve) => {
-    try { if (!fs.existsSync(bin) || fs.statSync(bin).size < 1_000_000) return resolve(false); }
-    catch { return resolve(false); }
+    try { if (!fs.existsSync(bin) || fs.statSync(bin).size < 1_000_000) return resolve(null); }
+    catch { return resolve(null); }
     let out = '';
     let done = false;
-    const finish = (ok: boolean) => { if (!done) { done = true; resolve(ok); } };
+    const finish = (v: string | null) => { if (!done) { done = true; resolve(v); } };
     try {
       const child = spawn(bin, ['--version'], { windowsHide: true });
       child.stdout.on('data', (d) => { out += d.toString(); });
-      child.on('error', () => finish(false));
-      child.on('close', (code) => finish(code === 0 && /\d{4}\.\d{2}\.\d{2}/.test(out)));
-      setTimeout(() => { try { child.kill(); } catch {} finish(false); }, 10_000);
-    } catch { finish(false); }
+      child.on('error', () => finish(null));
+      child.on('close', (code) => {
+        const m = /\d{4}\.\d{2}\.\d{2}(\.\d+)?/.exec(out);
+        finish(code === 0 && m ? m[0] : null);
+      });
+      // 30s: na 1ª execução o macOS escaneia o binário novo e um PC lento demora — estourar
+      // o tempo NÃO quer dizer arquivo corrompido.
+      setTimeout(() => { try { child.kill(); } catch {} finish(null); }, 30_000);
+    } catch { finish(null); }
   });
+}
+const validateYtDlp = async (bin: string) => (await ytDlpVersion(bin)) !== null;
+const YTDLP_DID_NOT_START = 'The downloaded yt-dlp did not start — try again.';
+
+// ── macOS: yt-dlp em PASTA versionada (bin/yt-dlp-macos-<versão>/yt-dlp_macos) ──
+// A pasta desempacotada não tem `-U` ("Auto-update is not supported for unpackaged
+// executables"): a checagem diária baixa a versão nova numa pasta NOVA, e as antigas só
+// são apagadas no 1º uso da sessão seguinte — aí nenhum yt-dlp nosso está rodando nelas.
+const MAC_YTDLP_PREFIX = 'yt-dlp-macos-';
+const macYtDlpExe = (dir: string) => path.join(binDir(), dir, 'yt-dlp_macos');
+const versionKey = (v: string) => v.split('.').map((n) => n.padStart(4, '0')).join('.');
+function macYtDlpDirs(): string[] {   // da mais nova pra mais velha
+  try {
+    return fs.readdirSync(binDir())
+      .filter((d) => d.startsWith(MAC_YTDLP_PREFIX) && fs.existsSync(macYtDlpExe(d)))
+      .sort((a, b) => versionKey(b.slice(MAC_YTDLP_PREFIX.length)).localeCompare(versionKey(a.slice(MAC_YTDLP_PREFIX.length))));
+  } catch { return []; }
+}
+
+// Versão mais nova publicada: o /releases/latest redireciona pra .../tag/<versão>.
+function latestYtDlpVersion(): Promise<string | null> {
+  return new Promise((resolve) => {
+    try {
+      const req = https.request('https://github.com/yt-dlp/yt-dlp/releases/latest',
+        { method: 'HEAD', headers: { 'User-Agent': 'bah-browser' } }, (res) => {
+          res.resume();
+          const m = /\/tag\/([\d.]+)$/.exec(String(res.headers.location || ''));
+          resolve(m ? m[1] : null);
+        });
+      req.on('error', () => resolve(null));
+      req.setTimeout(10_000, () => req.destroy(new Error('timeout')));
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+async function installMacYtDlp(): Promise<string> {
+  const zip = path.join(binDir(), 'ytdlp-macos-dl.zip');
+  const extractDir = path.join(binDir(), 'ytdlp-macos-extract');   // nome fora do prefixo: nunca é "instalada"
+  try {
+    await downloadToFile(YTDLP_URL, zip);
+    if (!(await expandZip(zip, extractDir))) throw new Error('failed to unzip yt-dlp');
+    const exe = path.join(extractDir, 'yt-dlp_macos');
+    makeExecutable(exe);
+    const ver = await ytDlpVersion(exe);
+    if (!ver) throw new Error(YTDLP_DID_NOT_START);
+    const dir = MAC_YTDLP_PREFIX + ver;
+    fs.rmSync(path.join(binDir(), dir), { recursive: true, force: true });
+    fs.renameSync(extractDir, path.join(binDir(), dir));
+    return macYtDlpExe(dir);
+  } finally {
+    try { fs.rmSync(zip, { force: true }); } catch {}
+    try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+let macInstall: Promise<string> | null = null;
+let macCleaned = false;
+async function ensureMacYtDlp(onStatus?: (msg: string) => void): Promise<string> {
+  const dirs = macYtDlpDirs();
+  if (dirs.length) {
+    if (!macCleaned) {
+      macCleaned = true;
+      for (const d of dirs.slice(1)) { try { fs.rmSync(path.join(binDir(), d), { recursive: true, force: true }); } catch {} }
+    }
+    if (macInstall || !updateDueToday()) return macYtDlpExe(dirs[0]);
+    try { fs.writeFileSync(updateStampPath(), String(Date.now())); } catch {} // marca já: falha não re-tenta a cada download
+    const latest = await latestYtDlpVersion();
+    if (!latest || latest === dirs[0].slice(MAC_YTDLP_PREFIX.length)) return macYtDlpExe(dirs[0]);
+    onStatus?.('Updating the download engine…');
+    macInstall = installMacYtDlp().finally(() => { macInstall = null; });
+    try { return await macInstall; } catch { return macYtDlpExe(dirs[0]); }   // falhou: segue com a atual
+  }
+  if (macInstall) return macInstall;
+  onStatus?.('Preparing the video download engine (first time)…');
+  macInstall = installMacYtDlp()
+    .then((exe) => { onStatus?.('Download engine ready.'); return exe; })
+    .finally(() => { macInstall = null; });
+  return macInstall;
 }
 
 let ensurePromise: Promise<string> | null = null;
 export async function ensureYtDlp(onStatus?: (msg: string) => void): Promise<string> {
+  if (IS_MAC) return ensureMacYtDlp(onStatus);
   const p = ytDlpPath();
   if (fs.existsSync(p) && fs.statSync(p).size > 1_000_000) {
     await maybeAutoUpdate(p, onStatus); // já instalado → checa atualização (throttled)
@@ -165,7 +254,7 @@ export async function ensureYtDlp(onStatus?: (msg: string) => void): Promise<str
       // recém-baixado = última versão; confere que NÃO veio corrompido antes de confiar
       if (!(await validateYtDlp(p))) {
         try { fs.unlinkSync(p); } catch {}
-        throw new Error('The downloaded yt-dlp looks invalid/corrupted — try again.');
+        throw new Error(YTDLP_DID_NOT_START);
       }
       onStatus?.('Download engine ready.');
       return p;
