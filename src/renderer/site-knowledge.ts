@@ -1,5 +1,24 @@
 import type { ObservedState } from './page-executor';
 import { googleLocaleParams } from './i18n';
+import { namesStore } from './stores';
+
+// Loja/enciclopédia do PAÍS da pessoa (era fixo amazon.com.br e pt.wikipedia — usuário nos EUA
+// caía na Amazon do Brasil, em reais). País/idioma vêm do navegador (locale do sistema).
+const AMAZON_BY_COUNTRY: Record<string, string> = {
+  US: 'amazon.com', GB: 'amazon.co.uk', UK: 'amazon.co.uk', CA: 'amazon.ca', DE: 'amazon.de', AT: 'amazon.de', BR: 'amazon.com.br',
+  ES: 'amazon.es', FR: 'amazon.fr', IT: 'amazon.it', MX: 'amazon.com.mx', IN: 'amazon.in', JP: 'amazon.co.jp', AU: 'amazon.com.au',
+  NL: 'amazon.nl', SE: 'amazon.se', PL: 'amazon.pl', BE: 'amazon.com.be', TR: 'amazon.com.tr', AE: 'amazon.ae', SA: 'amazon.sa', SG: 'amazon.sg',
+};
+function userLocale(): string {
+  try { return (typeof navigator !== 'undefined' && (navigator.languages?.[0] || navigator.language)) || 'en-US'; } catch { return 'en-US'; }
+}
+export function userAmazonDomain(locale = userLocale()): string {
+  const country = (locale.split(/[-_]/)[1] || (locale.toLowerCase().startsWith('pt') ? 'BR' : 'US')).toUpperCase();
+  return AMAZON_BY_COUNTRY[country] || 'amazon.com';
+}
+export function userWikiLang(locale = userLocale()): string {
+  return (locale.split(/[-_]/)[0] || 'en').toLowerCase();
+}
 
 export interface SiteShortcut {
   id: string;
@@ -102,9 +121,9 @@ export const SITE_SHORTCUTS: SiteShortcut[] = [
   },
   { id: 'instagram', names: ['instagram'], url: 'https://www.instagram.com', notes: ['May require login.'] },
   { id: 'x', names: ['x', 'twitter'], url: 'https://x.com', searchUrl: 'https://x.com/search?q={query}', notes: ['Use search URL for public searches.'] },
-  { id: 'wikipedia', names: ['wikipedia'], url: 'https://www.wikipedia.org', searchUrl: 'https://pt.wikipedia.org/w/index.php?search={query}', notes: ['Good fallback for factual research.'] },
+  { id: 'wikipedia', names: ['wikipedia'], url: 'https://www.wikipedia.org', searchUrl: `https://${userWikiLang()}.wikipedia.org/w/index.php?search={query}`, notes: ['Good fallback for factual research.'] },
   { id: 'github', names: ['github'], url: 'https://github.com', searchUrl: 'https://github.com/search?q={query}', notes: ['Use for code, repos and issues.'] },
-  { id: 'amazon', names: ['amazon'], url: 'https://www.amazon.com.br', searchUrl: 'https://www.amazon.com.br/s?k={query}', notes: ['Use for product searches.'] },
+  { id: 'amazon', names: ['amazon'], url: `https://www.${userAmazonDomain()}`, searchUrl: `https://www.${userAmazonDomain()}/s?k={query}`, notes: ['Use for product searches.'] },
   { id: 'mercadolivre', names: ['mercado livre', 'mercadolivre'], url: 'https://www.mercadolivre.com.br', searchUrl: 'https://lista.mercadolivre.com.br/{query}', notes: ['Use for Brazilian product searches.'] },
   { id: 'reddit', names: ['reddit'], url: 'https://www.reddit.com', searchUrl: 'https://www.reddit.com/search/?q={query}', notes: ['The home page may show a challenge. Prefer direct search URLs for safe exploration.'] },
   { id: 'gmail', names: ['gmail'], url: 'https://mail.google.com', notes: ['Requires Google login/cookies.'] },
@@ -656,12 +675,14 @@ export function detectQuickAction(command: string, opts?: { forceImage?: boolean
     // video" têm palavra de mídia própria (música/vídeo) sem NENHUMA palavra de notícia —
     // aí 'latest' descreve a MÍDIA, não pede manchete, e o pedido de verdade é das famílias
     // de download/vídeo mais abaixo. "latest version"/"meu download" (status, não notícia)
-    // também cedem.
+    // também cedem. Idem pra pedido de ARQUIVO ("find the latest ubuntu iso and download
+    // it"): 'latest' descreve o arquivo; quem resolve é o agente, não as manchetes.
     const hasNewsWord = /\b(noticias?|not[ií]cia|manchetes?|headlines?|news)\b/.test(n);
     const stealsFromMediaFamily = !hasNewsWord && /\b(song|songs|video|videos|music|musica|musicas|track|tracks|mp3|mp4|clipe|clip)\b/.test(n);
     const isStatusOrVersionQ = !hasNewsWord && /\b(version|meu\s+download|my\s+download|esse\s+download|this\s+download)\b/.test(n);
+    const wantsAFile = !hasNewsWord && /\b(download\w*|baix\w+|descarg\w+|iso|installer|instalador|release|file|files|arquivo|arquivos|archivo|archivos|pdf|zip)\b/.test(n);
     if (/\b(noticias?|not[ií]cia|manchetes?|ultimas?\s+not|o\s+que\s+(?:est[aá]|ta)\s+acontecendo|aconteceu\s+(?:hoje|com)|novidades?\s+(?:sobre|de|do|da)|news|headlines?|latest|what'?s\s+happening|what\s+happened)\b/.test(n)
-        && !REFERS_TO_OPEN_ITEM.test(n) && !stealsFromMediaFamily && !isStatusOrVersionQ) {
+        && !REFERS_TO_OPEN_ITEM.test(n) && !stealsFromMediaFamily && !isStatusOrVersionQ && !wantsAFile) {
       const STRIP = new Set(('noticia noticias notícia notícias manchete manchetes ultima ultimas última últimas ' +
         'me da de do da dos das sobre acerca o a os as um uma sobre quero ver mostra mostrar lista quais qual ' +
         'que esta ta acontecendo aconteceu hoje agora novidade novidades por favor recentes recente do dia ' +
@@ -690,7 +711,9 @@ export function detectQuickAction(command: string, opts?: { forceImage?: boolean
     // preço de produto. E "essa página"/"this"/"aberto" → o preço já está NA TELA; buscar
     // de novo no Shopping é o oposto do pedido — cede pro agente, que lê o preço exibido.
     const isDocOrOpenRef = /\b(pdf|documento|anexad\w*|attach\w*|adjunt\w*)\b/.test(n) || REFERS_TO_OPEN_ITEM.test(n);
-    if (isPrice && !isQuote && !isDocOrOpenRef) {
+    // Loja NOMEADA ("na amazon", "on ebay") → a pessoa quer aquela loja: cede pro agente (que
+    // tem a skill da loja), em vez do atalho de Google Shopping — que nem é a loja pedida.
+    if (isPrice && !isQuote && !isDocOrOpenRef && !namesStore(command)) {
       const STRIP = new Set(('procur\\w preco precos preço preços quanto custa ta esta é mais barato barata baratos baratas ' +
         'onde comprar compro acho compare comparar comparacao de do da dos das o a os as um uma menor valor por favor me ' +
         'quero queria achar encontrar ver mostra mostrar lista qual quais melhor ' +
@@ -1167,7 +1190,7 @@ function extractSearchQuery(command: string, site: SiteShortcut): string {
   let q = command;
   for (const name of site.names) q = q.replace(new RegExp(escapeRegExp(name), 'ig'), ' ');
   q = q
-    .replace(/\b(abrir|abre|abr[aã]|entrar|ir|vai|va|no|na|em|de|do|da|dos|das|um|uma|uns|umas|o|a|os|as|me|diga|dizer|fale|qual|titulo|t[ií]tulo|nome|aberto|aberta|pesquisar|pesquise|buscar|busque|procure|clicar|clique|clip|clipe|video|v[ií]deo|videos|v[ií]deos|musica|m[uú]sica|musicas|m[uú]sicas|can[cç][aã]o|show|ao vivo|dar|like|curtir|gostei|assistir|tocar|play|deixar|deixe|fazer|postar|publicar|coment[aá]rio|comentar|comment|comments|legal|bom|boa|top|massa|ingles|ingl[eê]s|portugues|portugu[eê]s|open|watch|search|find|look|show|listen|download|save|get|grab|the|of|for|to|on|song|songs|track|movie)\b/ig, ' ')
+    .replace(/\b(abrir|abre|abr[aã]|entrar|ir|vai|va|no|na|em|de|do|da|dos|das|um|uma|uns|umas|o|a|os|as|me|diga|dizer|fale|qual|titulo|t[ií]tulo|nome|aberto|aberta|pesquisar|pesquise|buscar|busque|procure|clicar|clique|clip|clipe|video|v[ií]deo|videos|v[ií]deos|musica|m[uú]sica|musicas|m[uú]sicas|can[cç][aã]o|show|ao vivo|dar|like|curtir|gostei|assistir|tocar|play|deixar|deixe|fazer|postar|publicar|coment[aá]rio|comentar|comment|comments|legal|bom|boa|top|massa|ingles|ingl[eê]s|portugues|portugu[eê]s|open|watch|search|find|look|show|listen|download|save|get|grab|the|of|for|to|on|song|songs|track|movie|browse|shop|compare|comparar|compare prices|prices?|pre[cç]os?|cheapest|cheap|best|deals?|buy|comprar|and|e)\b/ig, ' ')
     .replace(/\s+/g, ' ')
     .replace(/^(e|and|com)\s+/i, '')
     .replace(/\s+(e|and|com|do|da|de|no|na|o|a)[\s.,;:!?]*$/i, '')

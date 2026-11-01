@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { namesStore } from '../stores';
 import { t, getLang, setLang, LANGS, Lang } from '../i18n';
 import { BrowserAction, formatAction } from '../page-executor';
 import { AISettings, LocalProvider, LocalSettings } from '../store';
@@ -6,6 +7,7 @@ import { resolveVisionMode, type VisionMode } from '../../shared/vision';
 import { detectQuickAction, getInitialShortcutAction, commandHasExplicitUrl, pointsAtOpenScreen, vagueRequestKind } from '../site-knowledge';
 import { speak, stopSpeaking } from '../tts';
 import { parseRepeatIntent } from '../macros';
+import { CommandHistory } from '../command-history';
 import { fmtUsd } from '../pricing';
 
 export interface StepRecord {
@@ -25,7 +27,7 @@ export interface StepRecord {
 export type AgentProgressEvent =
   | { kind: 'status'; message: string }
   | { kind: 'manual_help'; message: string; instruction: string; onContinue: () => void }
-  | { kind: 'confirm'; message: string; label: string; risk: string; onConfirm: () => void; onCancel: () => void }
+  | { kind: 'confirm'; message: string; label: string; risk: string; onConfirm: () => void; onCancel: () => void; title?: string; yesLabel?: string; noLabel?: string }
   | { kind: 'plan_preview'; goal: string; steps: string[]; autoRunMs?: number; onApprove: () => void; onEdit: (goal: string) => void; onCancel: () => void; onHold?: () => void }
   | { kind: 'thought'; message: string }
   | { kind: 'action'; action: BrowserAction }
@@ -52,7 +54,7 @@ type FeedData =
   | { kind: 'report'; text: string }
   | { kind: 'error'; text: string }
   | { kind: 'help'; message: string; instruction: string }
-  | { kind: 'confirm'; message: string };
+  | { kind: 'confirm'; message: string; title?: string; yesLabel?: string; noLabel?: string };
 type FeedItem = FeedData & { id: number };
 
 const FEED_CAP = 400;
@@ -128,6 +130,33 @@ function isInfoRequest(msg: string): boolean { return INFO_RE.test(msg) || isQue
 // Verbo que OPERA numa página (faz algo, não só lê/pergunta) → agente.
 const PAGE_OP_RE = /\b(abr[ae]\w*|abrir|clic\w+|preench\w+|compr[ae]\w*|comprar|carrinho|finaliz\w+|login|logar|logue|entr[ae]\w*\s+(na|no|em|com)|curt\w+|inscrev\w+|seguir|post\w+|publi\w+|coment\w+|envi\w+\s+(email|e-mail|mensagem|coment)|cadastr\w+|reserv\w+|agend\w+|toc[ae]\w*\s+(o|a|um)|assist\w+|click|fill|buy|cart|checkout|log\s?in|sign\s+in|subscribe|follow|publish|comment|send\s+(?:an?\s+)?(?:email|message)|register|book|schedule)\b/i;
 function isPageOp(msg: string): boolean { return PAGE_OP_RE.test(msg); }
+
+// Pedido de BAIXAR um arquivo → agente (ele tem a ação download). Vem ANTES do INFO_RE no
+// roteador: "find the latest ubuntu iso and download it?" tem find/latest/"?" e ia parar
+// na pesquisa, que só responde texto. Aceita os erros de digitação comuns ("downoad",
+// "dowload", "donwload"...). "como baixar X?"/"how do I download X" continua sendo pergunta.
+// Hotel/voo/aluguel/ingresso PRA UMA DATA: preço e disponibilidade ao vivo só existem no site de
+// reserva — é tarefa do agente, não da pesquisa (que só lê o Google e não vê disponibilidade).
+const BOOKING_RE = /\b(hotels?|motels?|lodging|accommodations?|airbnb|hostels?|resorts?|inn|flights?|airfare|plane tickets?|rental cars?|car rentals?|tickets?|reservations?|hot[eé]is|hotel|hospedagem|pousadas?|passagens?|voos?|aluguel de carro|hoteles|vuelos|alojamiento)\b/i;
+const WHEN_RE = /\b(tonight|tomorrow|this weekend|next weekend|next week|weekend|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d|\d{1,2}(st|nd|rd|th)?\s*(of\s*)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|\d{1,2}[\/.-]\d{1,2}|for \d+ nights?|check[- ]?in|amanh[aã]|fim de semana|pr[oó]xim[ao] semana|hoy|mañana|fin de semana|per night|a night|\bnight\b)\b/i;
+function wantsLiveBooking(msg: string): boolean {
+  return BOOKING_RE.test(msg) && WHEN_RE.test(msg);
+}
+
+// Loja nomeada + navegar/comparar/achar produto → agente na loja (a pesquisa só leria o Google).
+// Lista de lojas compartilhada: ../stores.ts
+const SHOP_VERB_RE = /\b(browse|shop|find|search|compare|cheapest|best|price|prices|deal|deals|under|over|larger|bigger|smaller|buy|look for|show me|need|want|procur\w*|compar\w*|pre[cç]o|barat\w*|busc\w*)\b/i;
+function wantsStoreBrowse(msg: string): boolean { return namesStore(msg) && SHOP_VERB_RE.test(msg); }
+// "compatible charger/adapter/battery for <modelo>" → o agente olha o site do fabricante e as lojas.
+const PART_RE = /\b(charger|adapter|adaptor|power supply|ac adapter|battery|replacement part|compatible|fonte|carregador|bateria|cargador)\b/i;
+const MODEL_RE = /\b(lenovo|thinkpad|ideapad|legion|yoga|dell|xps|latitude|inspiron|hp|elitebook|pavilion|probook|asus|zenbook|vivobook|acer|aspire|macbook|surface)\b|\b[a-z]{0,4}\d{2,}[a-z0-9-]*\b/i;
+function wantsPartLookup(msg: string): boolean { return PART_RE.test(msg) && MODEL_RE.test(msg) && SHOP_VERB_RE.test(msg); }
+
+const DOWNLOAD_RE = /\b(down?load\w*|downlaod\w*|donwload\w*|downoad\w*|dwnload\w*|baix[ae]\w*|baixar|descarg\w+)\b/i;
+function wantsDownload(msg: string): boolean {
+  const m = msg.trim();
+  return DOWNLOAD_RE.test(m) && !/^(how\s+(do|can|to)|como\b|cómo\b|what|o\s+que|qu[eé]\b)/i.test(m);
+}
 
 // Sobre a PÁGINA ATUAL (não a web aberta) → chat com o conteúdo da página.
 const CUR_PAGE_RE = /\b(resum\w+|resumir|(?:essa|esta|dessa|desta|da|nessa|nesta)\s+p[aá]gina|(?:essa|esta|a|nessa|nesta|minha)\s+aba|(?:este|esse)\s+(artigo|texto|v[ií]deo|site)|o\s+que\s+(diz|fala|tem)\s+(aqui|a\s+p[aá]gina)|tradu\w+\s+(essa|esta|a)\s+p[aá]gina|summari[sz]e\w*|(?:this|the)\s+(page|tab|article|text|video|site)|what\s+does\s+this\s+(say|page|article)|translate\s+(?:this|the)\s+page)\b/i;
@@ -230,6 +259,9 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
   }, [activeTabUrl]);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // ↑/↓ = comandos já enviados (estilo terminal), pra não redigitar.
+  const cmdHistoryRef = useRef<CommandHistory | null>(null);
+  if (!cmdHistoryRef.current) cmdHistoryRef.current = new CommandHistory();
   // Caixa unificada: a proposta de ação do último turno de chat (se houver). Um "sim"
   // do usuário, ou o botão "⚡ Fazer isso", executa este comando no agente.
   const pendingSuggestionRef = useRef<string | null>(null);
@@ -403,6 +435,7 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
   }, [tabIds]);
   const [manualHelp, setManualHelp] = useState<{ message: string; instruction: string } | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<{ message: string } | null>(null);   // freio de segurança
+  const confirmLabelsRef = useRef(false);   // a pergunta pendente tem botões próprios (não é o freio)
   const [planPreview, setPlanPreview] = useState<{ goal: string; steps: string[] } | null>(null);
   const [planDraft, setPlanDraft] = useState('');
   const [planEditing, setPlanEditing] = useState(false);
@@ -602,11 +635,29 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
     const id = setInterval(() => setThinkIdx(i => i + 1), 1600);
     return () => clearInterval(id);
   }, [chatLoading]);
+  // Só um gesto de VERDADE da pessoa (roda, toque, teclado, ponteiro) desliga o grudar-no-fim.
+  // Antes qualquer evento de scroll contava — e o navegador gera scroll sozinho (chip de status
+  // sumindo, scroll anchoring), aí o feed parava de descer até a pessoa mexer no painel.
+  const userScrollAtRef = useRef(0);
+  const markUserScroll = () => { userScrollAtRef.current = Date.now(); };
   const onFeedScroll = () => {
     const el = feedRef.current;
     if (!el) return;
-    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom) stickToBottomRef.current = true;
+    else if (Date.now() - userScrollAtRef.current < 1500) stickToBottomRef.current = false;
   };
+  // Conteúdo que cresce DEPOIS do item entrar (screenshot carregando, texto em stream, card que
+  // expande) também desce o feed enquanto ele está grudado no fim.
+  useEffect(() => {
+    const el = feedRef.current;
+    if (!el) return;
+    const stick = () => { if (stickToBottomRef.current) el.scrollTop = el.scrollHeight; };
+    const mo = new MutationObserver(stick);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    el.addEventListener('load', stick, true);   // <img> carregando (o evento 'load' não sobe: captura)
+    return () => { mo.disconnect(); el.removeEventListener('load', stick, true); };
+  }, []);
 
   const runAgent = async (cmd: string, opts?: { forceImage?: boolean; skipPush?: boolean }) => {
     // Re-entrada: um agente JÁ rodando nunca pode ser atropelado por outro (o 2º
@@ -639,7 +690,8 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
         } else if (event.kind === 'confirm') {
           confirmActionsRef.current = { onConfirm: event.onConfirm, onCancel: event.onCancel };
           setPendingConfirm({ message: event.message });
-          push({ kind: 'confirm', message: event.message });
+          confirmLabelsRef.current = !!event.yesLabel;
+          push({ kind: 'confirm', message: event.message, title: event.title, yesLabel: event.yesLabel, noLabel: event.noLabel });
         } else if (event.kind === 'result') {
           // skip — step cards already carry action+result (avoids duplicate noise)
         } else if (event.kind === 'media') {
@@ -675,8 +727,12 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
       planCbRef.current = null;
       setPlanPreview(null);
       setPlanEditing(false);
-      setPendingConfirm(null);
-      confirmActionsRef.current = null;
+      // Freio de segurança pendente morre com a tarefa. Pergunta com botões próprios (ex.: "Salvar
+      // como skill", feita JUSTO quando a tarefa termina) fica — senão o card ficava sem botões.
+      if (!confirmLabelsRef.current) {
+        setPendingConfirm(null);
+        confirmActionsRef.current = null;
+      }
       // Mensagem mandada quando a IA já estava terminando (não chegou a ler): vira o próximo
       // pedido, logo em seguida — como numa conversa. Depois do Parar ela volta pra caixa:
       // o Parar é o freio, nada roda sozinho depois dele.
@@ -859,6 +915,10 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
     const pointsAtScreen = pageOpen && isQuestion(msg) && pointsAtOpenScreen(msg);
     if (isAboutCurrentPage(msg) || pointsAtScreen) { runChat(msg, undefined, undefined, skipPush); return; }
     if (isPageOp(msg) && !isQuestion(msg)) { pendingSuggestionRef.current = null; runAgent(msg, { skipPush }); return; }
+    if (wantsDownload(msg)) { pendingSuggestionRef.current = null; runAgent(msg, { skipPush }); return; }
+    if (wantsLiveBooking(msg)) { pendingSuggestionRef.current = null; runAgent(msg, { skipPush }); return; }
+    if (wantsStoreBrowse(msg)) { pendingSuggestionRef.current = null; runAgent(msg, { skipPush }); return; }
+    if (wantsPartLookup(msg)) { pendingSuggestionRef.current = null; runAgent(msg, { skipPush }); return; }
     if (isInfoRequest(msg)) { runResearch(msg, skipPush); return; }
     if (getInitialShortcutAction(msg) || isImperativeAction(msg)) { pendingSuggestionRef.current = null; runAgent(msg, { skipPush }); return; }
     runChat(msg, undefined, undefined, skipPush);
@@ -1041,6 +1101,7 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
   const handleSubmit = () => {
     const msg = input.trim();
     if (!msg) return;
+    cmdHistoryRef.current?.push(msg);
     // Tarefa do agente rodando e a pessoa mudou de ideia: a mensagem vai PRA tarefa (a IA
     // para o que está pensando, lê e decide — ajustar, mudar de rumo ou encerrar). Se a
     // tarefa estava parada em "Preciso de você", a resposta da pessoa conta como continuar.
@@ -1105,7 +1166,9 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
     const actions = confirmActionsRef.current;
     confirmActionsRef.current = null;
     setPendingConfirm(null);
-    push({ kind: 'event', event: { kind: 'status', message: ok ? '✅ You confirmed — continuing.' : '✖️ You canceled the action.' } });
+    // Pergunta com botões próprios (ex.: "Salvar skill") não é o freio de segurança: sem o recado de risco.
+    if (!confirmLabelsRef.current) push({ kind: 'event', event: { kind: 'status', message: ok ? '✅ You confirmed — continuing.' : '✖️ You canceled the action.' } });
+    confirmLabelsRef.current = false;
     if (actions) (ok ? actions.onConfirm : actions.onCancel)();
   };
 
@@ -1696,7 +1759,7 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
       )}
 
       {/* ── Unified activity feed (infinite scroll, persists across tasks) ── */}
-      <div className="agent-feed" ref={feedRef} onScroll={onFeedScroll}>
+      <div className="agent-feed" ref={feedRef} onScroll={onFeedScroll} onWheel={markUserScroll} onTouchMove={markUserScroll} onPointerDown={markUserScroll} onKeyDown={markUserScroll} style={{ overflowAnchor: 'none' }}>
         {/* Página aberta e conversa vazia: em vez de um painel morto, mostra perguntas
             SOBRE esta página. Ancorado embaixo (perto do compositor), como um convite. */}
         {feed.length === 0 && pageOpen && pageSuggestions.length > 0 && (
@@ -1835,8 +1898,25 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
           className="composer-input"
           rows={1}
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
+          onChange={e => { cmdHistoryRef.current?.reset(); setInput(e.target.value); }}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); return; }
+            // ↑ só com o cursor na 1ª linha e ↓ só na última: dentro de texto com várias
+            // linhas as setas continuam movendo o cursor normalmente.
+            if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || e.shiftKey || e.altKey || e.metaKey || e.ctrlKey || e.nativeEvent.isComposing) return;
+            const el = e.currentTarget;
+            const pos = el.selectionStart ?? 0;
+            if (el.selectionStart !== el.selectionEnd) return;
+            const h = cmdHistoryRef.current;
+            if (!h) return;
+            const next = e.key === 'ArrowUp'
+              ? (el.value.lastIndexOf('\n', pos - 1) === -1 ? h.up(el.value) : null)
+              : (el.value.indexOf('\n', pos) === -1 ? h.down() : null);
+            if (next === null) return;
+            e.preventDefault();
+            setInput(next);
+            requestAnimationFrame(() => { try { el.setSelectionRange(next.length, next.length); } catch {} });
+          }}
           placeholder={attachedDoc ? t('composer.phFile') : imageMode ? t('composer.phImage') : (loading && onInterject) ? t('composer.phInterject') : ph}
           disabled={chatLoading || (loading && !onInterject)}
         />
@@ -2138,12 +2218,12 @@ function FeedRow({ item, onContinue, helpActive, onConfirmRisky, confirmActive, 
     case 'confirm':
       return (
         <div className="feed-confirm-card">
-          <div className="feed-confirm-title">{t('feed.confirmTitle')}</div>
-          <div className="feed-confirm-msg">{item.message}</div>
+          <div className="feed-confirm-title">{item.title || t('feed.confirmTitle')}</div>
+          <div className="feed-confirm-msg" style={{ whiteSpace: 'pre-wrap' }}>{item.message}</div>
           {confirmActive && (
             <div className="feed-confirm-actions">
-              <button className="confirm-yes" onClick={() => onConfirmRisky(true)}>{t('feed.confirmYes')}</button>
-              <button className="confirm-no" onClick={() => onConfirmRisky(false)}>{t('feed.confirmNo')}</button>
+              <button className="confirm-yes" onClick={() => onConfirmRisky(true)}>{item.yesLabel || t('feed.confirmYes')}</button>
+              <button className="confirm-no" onClick={() => onConfirmRisky(false)}>{item.noLabel || t('feed.confirmNo')}</button>
             </div>
           )}
         </div>
