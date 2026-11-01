@@ -113,6 +113,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('proxy:auth-request', listener);
     return () => ipcRenderer.removeListener('proxy:auth-request', listener);
   },
+  regionGet: (force?: boolean) => ipcRenderer.invoke('region:get', force),
+  regionSet: (r: any) => ipcRenderer.invoke('region:set', r),
+  onRegionChanged: (cb: () => void) => { const l = () => cb(); ipcRenderer.on('region:changed', l); return () => ipcRenderer.removeListener('region:changed', l); },
   sitePermRespond: (id: number, choice: 'once' | 'always' | 'never' | 'dismiss' | 'auto-deny') => ipcRenderer.invoke('siteperm:respond', id, choice),
   sitePermList: () => ipcRenderer.invoke('siteperm:list'),
   sitePermReset: (origin: string, kind?: string) => ipcRenderer.invoke('siteperm:reset', origin, kind),

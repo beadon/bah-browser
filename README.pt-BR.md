@@ -171,6 +171,20 @@ proxy SOCKS / túnel `ssh -D`) · **PAC** (URL do script) · **Direto**, mais um
   então a página não descobre o seu IP real por ele. Sem proxy (ou com app de VPN, que age no SO) vale o padrão
   do Chrome. O Chromium não faz login em proxy SOCKS5 (usuário/senha); SOCKS5 sem senha funciona.
 
+### Região e hora (VPN, viagem)
+
+Menu ⋮ → **🌍 Região e hora**:
+- **Local da rede:** com VPN ou proxy, os sites mostram preços, moeda e estoque do país onde a conexão sai.
+  No **Automático** (padrão) o Bah confere esse país com uma requisição ao `cdn-cgi/trace` da Cloudflare quando
+  uma tarefa começa (cache de 10 min, de novo quando o proxy muda) e avisa o agente, pra ele não chamar preço
+  de fora de "local". As buscas usam esse país (`gl=` / `cc=`). Em tarefa de compra ou viagem, se o país da
+  rede for diferente do computador, o Bah pergunta uma vez qual preferir. **Região do computador** ou **um país
+  específico** nunca consultam a rede.
+- **Fuso dos sites:** o do computador (padrão), um fuso escolhido pra planejar viagem ou voo, ou **UTC** (esconde
+  seu fuso real dos scripts). Aplicado no motor como o override do DevTools; um selo 🕐 na barra mostra; volta pro
+  fuso do computador ao reiniciar, a não ser que marque *Manter*. O agente só *sugere* um fuso
+  (`suggest_time_zone`) — você confirma. Agendas com login costumam seguir o fuso da conta, não o do navegador.
+
 ---
 
 ## Segurança e limites

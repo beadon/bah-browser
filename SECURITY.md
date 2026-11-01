@@ -46,6 +46,13 @@ the entire boundary between the web/UI side and the privileged side (see below).
   are denied without asking. Screen capture, USB/HID/serial and unknown permissions are always denied.
   Before this, Electron's default granted all of these to every site silently. See
   [`src/main/site-permissions.ts`](src/main/site-permissions.ts).
+- **Network country check:** in *Auto* shopping region only, one request to `https://www.cloudflare.com/cdn-cgi/trace`
+  (through the browser engine, same route as your tabs) when a task starts or the 🌍 panel opens, cached 10 minutes.
+  Only the country code is used. Choose *My computer's region* or a fixed country to turn it off. See
+  [`src/main/region.ts`](src/main/region.ts).
+- **Time zone:** like every browser, page scripts can read your time zone. Bah also puts your region and time zone
+  in the agent's prompt, which goes to your AI provider (stays local with a local model). Choose **UTC** in 🌍
+  Region & time to hide it from pages.
 - **Proxy:** when a proxy is configured (OS settings, the 🌐 Network & proxy panel or `HTTPS_PROXY`),
   all of Bah's traffic goes through it — that is the point. Proxy passwords are typed into Bah's own
   box, stored only if you tick *Remember*, encrypted with the OS keychain (`safeStorage`, file

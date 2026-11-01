@@ -46,6 +46,7 @@ import { setupTorrentManager } from './torrent-manager';
 import { setupSkills } from './skills-loader';
 import { setupProxy, proxyFor } from './proxy';
 import { setupSitePermissions } from './site-permissions';
+import { setupRegion, getTimezoneOverride } from './region';
 import { loadSystemCAs, installCAs } from './system-ca';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
@@ -233,7 +234,18 @@ async function sharedEnsureDebugger(wc: Electron.WebContents, wcId: number): Pro
     wc.debugger.once('detach', () => debuggerAttachedSet.delete(wcId));   // reanexa (e reaplica a identidade) depois
     await wc.debugger.sendCommand('Accessibility.enable');
     await applyChromeIdentity(wc);
+    await applyTimezone(wc);
   }
+}
+
+// Fuso que os sites veem: o do computador, ou o que a PESSOA escolheu (🌍 Região e hora → viagem/voo).
+// Emulation.setTimezoneOverride é o mesmo do DevTools; '' volta pro do sistema.
+async function applyTimezone(wc: Electron.WebContents): Promise<void> {
+  try { await wc.debugger.sendCommand('Emulation.setTimezoneOverride', { timezoneId: getTimezoneOverride() }); }
+  catch (e: any) { console.warn('[Region] setTimezoneOverride failed:', e?.message || e); }
+}
+function applyTimezoneEverywhere(): void {
+  for (const wc of webContents.getAllWebContents()) if (debuggerAttachedSet.has(wc.id) && !wc.isDestroyed()) void applyTimezone(wc);
 }
 
 // Identidade do navegador DE DENTRO do motor (CDP Emulation.setUserAgentOverride): UA, os headers
@@ -3398,6 +3410,7 @@ app.whenReady().then(async () => {
   // (session.fetch): mesmo proxy, PAC, login e repositório de certificados das abas.
   setupProxy(() => mainWindow);
   setupSitePermissions(() => mainWindow);
+  setupRegion(applyTimezoneEverywhere, () => mainWindow);
   loadSystemCAs().then((pems) => { systemCAs = pems; const n = installCAs(pems); console.log(`[SystemCA] ${pems.length} OS certificates, ${n} added to Node`); }).catch(() => {});
   {
     const browsingSession = session.fromPartition('persist:browser');

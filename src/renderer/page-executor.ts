@@ -31,6 +31,7 @@ export type BrowserAction =
   | { type: 'find'; text: string }
   | { type: 'web_search'; query: string }
   | { type: 'history_search'; query: string }
+  | { type: 'suggest_time_zone'; zone: string; reason: string }
   | { type: 'back' }
   | { type: 'hover' | 'dblclick' | 'focus'; ref: number }
   | { type: 'drag'; ref: number; to_ref: number }
@@ -114,6 +115,7 @@ export function formatAction(action: BrowserAction): string {
     case 'click_ref': return `click_ref(@${action.ref})`;
     case 'look_at': return action.ref != null ? `look_at(@${action.ref})` : `look_at(${action.x},${action.y} ${action.w}x${action.h})`;
     case 'history_search': return `history_search("${shorten(action.query, 60)}")`;
+    case 'suggest_time_zone': return `suggest_time_zone(${action.zone})`;
     case 'web_search': return `web_search("${shorten(action.query, 60)}")`;
     case 'find': return `find("${shorten(action.text, 50)}")`;
     case 'back': return 'back()';

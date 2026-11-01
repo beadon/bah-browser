@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { configFromEnv, toElectronProxy, type ProxyConfig } from './proxy-config';
+import { invalidateNetworkCountry } from './region';
 export type { ProxyConfig } from './proxy-config';
 
 const cfgPath = () => path.join(app.getPath('userData'), 'proxy.json');
@@ -71,6 +72,7 @@ export function setupProxy(getMainWindow: () => BrowserWindow | null): void {
     try { fs.writeFileSync(cfgPath(), JSON.stringify(current, null, 2)); } catch {}
     await Promise.all([...knownSessions].map(applyTo));
     await refreshRtcPolicy();
+    invalidateNetworkCountry();   // outra rota → outro país de saída
     return { ok: true, config: current };
   });
   ipcMain.handle('proxy:forget-passwords', () => { forgetCreds(); return { ok: true }; });

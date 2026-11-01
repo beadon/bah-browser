@@ -9,6 +9,8 @@ import AgentVisualOverlay, { AgentVisualState, ClickRipple } from './components/
 import { AppGuideBar, BeginnerTour } from './components/AppGuide';
 import { ProxySettings, ProxyAuthPrompt } from './components/ProxyPanel';
 import { SitePermissionBar, SitePermissionsPanel } from './components/SitePermissions';
+import { RegionPanel } from './components/RegionPanel';
+import { refreshRegion, onRegionState, regionState, agentRegionLine, askedNetworkCountries } from './region-state';
 import { prefetchGpuInfo, gpuInfo, gpuIsLoaded } from './gpu-info';
 import TorrentSheet, { TorrentSheetData } from './components/TorrentSheet';
 import { useTabStore } from './store';
@@ -190,6 +192,9 @@ declare global {
       setHwAccel?: (on: boolean) => Promise<{ ok: boolean; enabled?: boolean }>;
       onSafeBrowsingBlock?: (cb: (info: { url: string; host: string }) => void) => void;
       proxyGet?: () => Promise<any>;
+      regionGet?: (mode?: boolean | 'peek') => Promise<any>;
+      regionSet?: (r: any) => Promise<any>;
+      onRegionChanged?: (cb: () => void) => () => void;
       sitePermRespond?: (id: number, choice: 'once' | 'always' | 'never' | 'dismiss' | 'auto-deny') => Promise<any>;
       sitePermList?: () => Promise<any>;
       sitePermReset?: (origin: string, kind?: string) => Promise<any>;
@@ -611,6 +616,14 @@ export default function App() {
   // First-run guide: the bar is a hint until dismissed, the tour is a reopenable dialog.
   const [proxyOpen, setProxyOpen] = useState(false);
   const [sitePermsOpen, setSitePermsOpen] = useState(false);
+  const [regionOpen, setRegionOpen] = useState(false);
+  const [tzChip, setTzChip] = useState('');   // fuso escolhido pros sites ('' = o do computador)
+  useEffect(() => {
+    const off = onRegionState(() => setTzChip(regionState()?.tzOverride || ''));
+    void refreshRegion('peek');
+    const offMain = window.electronAPI?.onRegionChanged?.(() => { void refreshRegion('peek'); });
+    return () => { off(); offMain?.(); };
+  }, []);
   // Aba que a pessoa está VENDO (≠ activeTabIdRef, que segue a aba do agente durante a tarefa).
   const shownTabRef = useRef(store.activeTabId);
   shownTabRef.current = store.activeTabId;
@@ -1307,6 +1320,11 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
           isBookmarked={favorites.some(f => f.url === store.activeTab.url)}
           onToggleBookmark={() => { const u = store.activeTab.url; if (favorites.some(f => f.url === u)) removeFavorite(u); else saveFavorite(); }}
           getSuggestions={getSuggestions}
+          extra={tzChip ? (
+            <button className="tz-chip" onClick={() => setRegionOpen(true)} title={t('region.chipTitle', { zone: tzChip })}>
+              🕐 {tzChip === 'UTC' ? 'UTC' : tzChip.split('/').pop()!.replace(/_/g, ' ')}
+            </button>
+          ) : null}
         />
         <div className="menu-wrap">
           <button
@@ -1468,6 +1486,10 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                 <button className="menu-item" onClick={() => { setMenuOpen(false); window.electronAPI?.skillsOpenFolder?.(); }} title={t('menu.mySkillsTitle')}>
                   <span className="menu-ic">🧩</span>
                   <span className="menu-label">{t('menu.mySkills')}</span>
+                </button>
+                <button className="menu-item" onClick={() => { setMenuOpen(false); setRegionOpen(true); }} title={t('menu.regionTitle')}>
+                  <span className="menu-ic">🌍</span>
+                  <span className="menu-label">{t('menu.region')}</span>
                 </button>
                 <button className="menu-item" onClick={() => { setMenuOpen(false); setSitePermsOpen(true); }} title={t('menu.sitePermsTitle')}>
                   <span className="menu-ic">🔒</span>
@@ -1637,6 +1659,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
           )}
           {proxyOpen && <ProxySettings onClose={() => setProxyOpen(false)} />}
           {sitePermsOpen && <SitePermissionsPanel onClose={() => setSitePermsOpen(false)} />}
+          {regionOpen && <RegionPanel onClose={() => setRegionOpen(false)} />}
           <SitePermissionBar isVisibleTab={isVisibleTab} />
           <ProxyAuthPrompt />
           {showGuide && (
@@ -1867,6 +1890,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               let noDownloadYetBlocks = 0;
               // Skills de navegação: carregadas uma vez por tarefa; escolhidas a cada passo.
               const allSkills: Skill[] = await window.electronAPI?.skillsList?.().catch(() => []) ?? [];
+              await refreshRegion();   // país de saída da rede (VPN/proxy) — cache de 10 min no main
               const commandIsShopping = namesStore(command) || /\b(buy|price|prices|cheapest|compare|deal|deals|product|products|under \$?\d+|pre[cç]os?|barat\w*|comprar)\b/i.test(command);
               // Peça compatível com um modelo (carregador/fonte/bateria pra "Lenovo IdeaPad 3 15ADA05").
               const commandIsParts = /\b(charger|chargers|adapter|adaptor|power (supply|adapter|brick)|ac adapter|battery|replacement|compatible|part number|fru|fonte|carregador|bateria|cargador)\b/i.test(command);
@@ -1874,6 +1898,18 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               // Site cuidadoso: quantas navegações o agente já fez nele NESTA tarefa (máx. 1).
               let carefulNavs = 0;
               const commandIsTravel = /\b(hotels?|motels?|lodging|accommodations?|airbnb|hostels?|resorts?|ski trip|flights?|rental cars?|car rentals?|hot[eé]is|hospedagem|pousadas?|voos?|hoteles|vuelos|alojamiento)\b/i.test(command);
+              // Compras/viagem com a conexão saindo em OUTRO país (VPN/proxy): os sites vão mostrar preço,
+              // moeda e estoque de lá. Pergunta uma vez por país, por sessão; só a pessoa muda a configuração.
+              { const rs = regionState();
+                if ((commandIsShopping || commandIsTravel) && rs && rs.settings.shopping === 'auto' && rs.network && rs.os && rs.network !== rs.os && !askedNetworkCountries.has(rs.network)) {
+                  askedNetworkCountries.add(rs.network);
+                  const name = (c: string) => { try { return new Intl.DisplayNames(['en'], { type: 'region' }).of(c) || c; } catch { return c; } };
+                  const useOs = await new Promise<boolean>((resolve) => onProgress({ kind: 'confirm', risk: 'region', label: 'shopping region',
+                    title: `🌍 Your connection exits in ${name(rs.network)}`,
+                    message: `Sites will show ${name(rs.network)}'s prices, currency and stock (VPN or proxy). Your computer is set to ${name(rs.os)}.\nShop for ${name(rs.network)}, or prefer ${name(rs.os)} stores and searches? You can change this in menu → 🌍 Region & time.`,
+                    yesLabel: `Prefer ${name(rs.os)}`, noLabel: `Use ${name(rs.network)}`, onConfirm: () => resolve(true), onCancel: () => resolve(false) } as any));
+                  if (useOs) { await window.electronAPI?.regionSet?.({ ...rs.settings, shopping: 'fixed', fixedCountry: rs.os }); await refreshRegion(); }
+                } }
               const commandWantsSearch = /\b(find|search|look up|compare|cheapest|available|list|show me|procur\w*|busc\w*|pesquis\w*|encontr\w*)\b/i.test(command);
               const captchaTriedUrls = new Set<string>();   // 1 tentativa de checkbox por página
               // look_at: a próxima captura vai pro modelo como recorte ampliado desta área (1 passo).
@@ -2585,6 +2621,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     buildKnownSitesBlock(observation),
                     '',
                     agentSearchLine(),
+                    agentRegionLine(),
                     pacingLine,
                     dialogBlock,
                     suggestBlock,
@@ -4301,6 +4338,20 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       }
                       toolResult = { success: true, info: { closed: action.tab } };
                     } else toolResult = { success: false, error: `Tab ${action.tab} not found` };
+                  } else if (action.type === 'suggest_time_zone') {
+                    // O agente só SUGERE; quem muda o fuso dos sites é a pessoa (cartão de confirmação).
+                    const cur = regionState();
+                    if (cur?.tzOverride === action.zone) toolResult = { success: true, info: { zone: action.zone, already: true } };
+                    else {
+                      const city = action.zone.split('/').pop()!.replace(/_/g, ' ');
+                      const yes = await new Promise<boolean>((resolve) => onProgress({ kind: 'confirm', risk: 'region', label: 'time zone', title: `🕐 Show sites in ${city} time?`,
+                        message: `${action.reason ? action.reason + '\n' : ''}Sites will see the time zone ${action.zone} instead of your computer's (${cur?.osTz || 'local'}). A 🕐 chip shows it in the address bar; change it back any time in menu → 🌍 Region & time.`,
+                        yesLabel: `🕐 Use ${city} time`, noLabel: 'Keep my time zone', onConfirm: () => resolve(true), onCancel: () => resolve(false) } as any));
+                      throwIfCancelled();
+                      if (yes && cur) { await window.electronAPI?.regionSet?.({ ...cur.settings, tz: 'zone', zone: action.zone }); await refreshRegion('peek'); }
+                      toolResult = yes ? { success: true, info: { zone: action.zone, note: 'Sites now use this time zone. Reload the page so it picks it up.' } }
+                        : { success: false, error: 'The user kept their own time zone. Convert times yourself if needed.' };
+                    }
                   } else if (action.type === 'history_search') {
                     if (!(await askPermission('history', `Search your browsing history for "${action.query.slice(0, 80)}".`))) {
                       toolResult = { success: false, error: 'The user did not allow the agent to read their browsing history.' };
@@ -4589,7 +4640,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   // Internal actions (plan/store/extract_text) never change the page — skip the
                   // settle + re-observe machinery (10-20s on heavy pages) and reuse the current state.
                   const pageNeutralAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'web_search' || action.type === 'history_search'
+                    || action.type === 'look_at' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud';
@@ -4653,7 +4704,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   });
                   // Internal-state actions (plan/store/extract) don't change the page — don't penalize them
                   const internalAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search' || action.type === 'history_search'
+                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud' || action.type === 'wait';

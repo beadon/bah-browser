@@ -46,6 +46,13 @@ fronteira inteira entre o lado web/UI e o lado privilegiado (veja abaixo).
   segundo plano ou ocultas são negados sem perguntar. Captura de tela, USB/HID/serial e permissões desconhecidas
   são sempre negadas. Antes disto, o padrão do Electron liberava tudo isso pra qualquer site, calado. Ver
   [`src/main/site-permissions.ts`](src/main/site-permissions.ts).
+- **Consulta do país da rede:** só na região de compras *Automática*, uma requisição a
+  `https://www.cloudflare.com/cdn-cgi/trace` (pelo motor do navegador, mesma rota das abas) quando uma tarefa começa
+  ou o painel 🌍 abre, com cache de 10 minutos. Só o código do país é usado. Escolha *Região do meu computador* ou um
+  país fixo para desligar. Ver [`src/main/region.ts`](src/main/region.ts).
+- **Fuso horário:** como em todo navegador, os scripts da página leem seu fuso. O Bah também põe sua região e fuso no
+  prompt do agente, que vai pro seu provedor de IA (fica local com modelo local). Escolha **UTC** em 🌍 Região e hora
+  pra esconder dos sites.
 - **Proxy:** com um proxy configurado (no SO, no painel 🌐 Rede e proxy ou via `HTTPS_PROXY`), todo o
   tráfego do Bah passa por ele — é esse o objetivo. Senhas de proxy são digitadas na caixa do próprio Bah,
   salvas só se você marcar *Lembrar*, cifradas com o chaveiro do SO (`safeStorage`, arquivo
