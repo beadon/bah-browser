@@ -66,3 +66,53 @@ test('upload: user picks the file; button-opened picker and labelled field both 
     expect(await app.evaluate(() => (globalThis as any).__picks)).toBe(1);   // diálogo abriu só uma vez
   } finally { await app.close(); server.close(); fs.rmSync(tmp, { recursive: true, force: true }); }
 });
+
+test('folder access: user allows a folder for the session; the agent reads and attaches the right file', async () => {
+  test.setTimeout(180_000);
+  const server = http.createServer((_q, res) => { res.setHeader('Content-Type', 'text/html'); res.end(PAGE); });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const T = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bah-folder-'));
+  const jobs = path.join(tmp, 'Jobs');
+  fs.mkdirSync(path.join(jobs, 'old'), { recursive: true });
+  fs.writeFileSync(path.join(jobs, 'resume-nurse.txt'), 'Registered nurse, ICU, 8 years.');
+  fs.writeFileSync(path.join(jobs, 'old', 'resume-engineer.txt'), 'Software engineer: TypeScript, Electron, 10 years.');
+  fs.writeFileSync(path.join(tmp, 'secret.txt'), 'outside the allowed folder');
+  const script = [
+    { type: 'navigate', url: T },
+    { type: 'list_files' },
+    { type: 'read_file', file: 'Jobs/old/resume-engineer.txt' },
+    { type: 'read_file', file: 'Jobs/../secret.txt' },
+    { type: 'upload', ref: '__REF:Upload resume__', file: 'Jobs/old/resume-engineer.txt' },
+    { type: 'done', reason: 'Attached the engineering resume.', success: true },
+  ];
+  const { ELECTRON_RUN_AS_NODE: _n, ...env } = process.env;
+  const app = await electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${path.join(tmp, 'profile')}`], env: { ...env, E2E_MOCK_AI: '1', E2E_MOCK_SCRIPT: JSON.stringify(script), NODE_ENV: 'test' } });
+  try {
+    await app.evaluate(({ dialog }, dir) => { (dialog as any).showOpenDialog = async () => ({ canceled: false, filePaths: [dir] }); }, jobs);
+    const page = await app.firstWindow(); await page.waitForLoadState('domcontentloaded'); await sleep(1500);
+    await page.evaluate(() => { localStorage.setItem('tourSeen', '1'); localStorage.setItem('guideSeen', '1'); });
+    await page.reload(); await page.waitForLoadState('domcontentloaded'); await sleep(2000);
+    if (!(await page.getByTestId('agent-command-input').isVisible().catch(() => false))) await page.locator('.top-bar-ai').click();
+    await page.getByTestId('agent-command-input').fill('attach the resume that fits a software job');
+    await page.getByTestId('agent-command-input').press('Enter');
+    const allow = page.getByRole('button', { name: /Choose folder/ });
+    for (let i = 0; i < 60 && !(await allow.isVisible().catch(() => false)); i++) {
+      if (await page.getByTestId('plan-approve').isVisible().catch(() => false)) await page.getByTestId('plan-approve').click();
+      await sleep(500);
+    }
+    await allow.click();
+    const out = () => app.evaluate(({ webContents }) => webContents.getAllWebContents().filter(w => w.getType() === 'webview').pop()!
+      .executeJavaScript(`document.getElementById('out').textContent`));
+    let text = '';
+    for (let i = 0; i < 120 && !/resume-engineer/.test(text); i++) { await sleep(500); text = await out(); }
+    expect(text).toMatch(/^resume=resume-engineer\.txt:\d+ letter=-$/);
+    const prompts: string[] = await app.evaluate(() => (global as any).__e2ePrompts || []);
+    const last = prompts[prompts.length - 1] || '';
+    expect(last).toContain('Jobs/resume-nurse.txt');
+    expect(last).toContain('Jobs/old/resume-engineer.txt');
+    expect(last).toContain('Software engineer: TypeScript');
+    expect(last).not.toContain('outside the allowed folder');
+    expect(last).toMatch(/not a file in a folder the user allowed/);
+  } finally { await app.close(); server.close(); fs.rmSync(tmp, { recursive: true, force: true }); }
+});

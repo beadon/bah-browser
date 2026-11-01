@@ -47,7 +47,7 @@ import { setupSkills } from './skills-loader';
 import { setupProxy, proxyFor } from './proxy';
 import { setupSitePermissions } from './site-permissions';
 import { setupRegion, getTimezoneOverride } from './region';
-import { setupUpload } from './upload';
+import { setupUpload, setUploadTextExtractor } from './upload';
 import { loadSystemCAs, installCAs } from './system-ca';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
@@ -2320,6 +2320,7 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
       return { ok: false, name, error: 'Could not read this file — it may be corrupted or in an unsupported format.' };
     }
   }
+  setUploadTextExtractor(extractTextFromFile);   // read_file do agente (só pastas liberadas pela pessoa)
   ipcMain.handle('file:pick-extract', async () => {
     if (process.env.E2E_DOC_PATH) return extractTextFromFile(process.env.E2E_DOC_PATH);   // test seam (no native dialog)
     const r = await dialog.showOpenDialog(mainWindow!, {

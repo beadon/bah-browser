@@ -53,6 +53,12 @@ the entire boundary between the web/UI side and the privileged side (see below).
 - **Time zone:** like every browser, page scripts can read your time zone. Bah also puts your region and time zone
   in the agent's prompt, which goes to your AI provider (stays local with a local model). Choose **UTC** in 🌍
   Region & time to hide it from pages.
+- **Files from your computer (uploads):** the agent never chooses a path. For `upload`, Bah shows a card and
+  *you* pick the file in the OS dialog (the agent sees only its name). Or you can **allow one folder for this
+  session**: the agent may then list it, read PDF/Word/text files in it (e.g. to pick the résumé that fits a
+  job) and attach files from it — resolved and checked in the main process (no `../` or symlink escape), until
+  you quit Bah or revoke it (menu ⋮ → 📂 Agent folder access). Nothing is sent until the site's form is
+  submitted. See [`src/main/upload.ts`](src/main/upload.ts).
 - **Proxy:** when a proxy is configured (OS settings, the 🌐 Network & proxy panel or `HTTPS_PROXY`),
   all of Bah's traffic goes through it — that is the point. Proxy passwords are typed into Bah's own
   box, stored only if you tick *Remember*, encrypted with the OS keychain (`safeStorage`, file

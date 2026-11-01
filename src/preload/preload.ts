@@ -113,6 +113,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('proxy:auth-request', listener);
     return () => ipcRenderer.removeListener('proxy:auth-request', listener);
   },
+  uploadGrantFolder: () => ipcRenderer.invoke('upload:grant-folder'),
+  uploadGrants: () => ipcRenderer.invoke('upload:grants'),
+  uploadRevokeAll: () => ipcRenderer.invoke('upload:revoke-all'),
+  uploadListFiles: () => ipcRenderer.invoke('upload:list-files'),
+  uploadReadFile: (file: string) => ipcRenderer.invoke('upload:read-file', file),
+  uploadTokenFor: (files: string[]) => ipcRenderer.invoke('upload:token-for', files),
   uploadPick: (opts: { multiple?: boolean; title?: string }) => ipcRenderer.invoke('upload:pick', opts),
   uploadSet: (wcId: number, backendNodeId: number | null, token: string, at?: { x: number; y: number }) => ipcRenderer.invoke('upload:set', wcId, backendNodeId, token, at),
   regionGet: (force?: boolean) => ipcRenderer.invoke('region:get', force),

@@ -7,6 +7,51 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 type Picked = { paths: string[]; at: number };
+
+// Pastas que a PESSOA liberou nesta sessão (some ao fechar o Bah). O agente vê caminhos relativos
+// "<pasta>/<arquivo>"; tudo é resolvido e conferido aqui (realpath dentro da pasta — sem ../ nem symlink pra fora).
+const grants: string[] = [];
+let extractText: ((p: string) => Promise<{ ok: boolean; text?: string; error?: string }>) | null = null;
+export function setUploadTextExtractor(fn: typeof extractText): void { extractText = fn; }
+const label = (root: string, i: number) => `${path.basename(root) || root}${grants.findIndex(g => path.basename(g) === path.basename(root)) !== i ? `-${i + 1}` : ''}`;
+function resolveFile(id: string): string | null {
+  const clean = String(id || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  for (let i = 0; i < grants.length; i++) {
+    const root = grants[i], pre = label(root, i) + '/';
+    if (!clean.startsWith(pre)) continue;
+    try {
+      const real = fs.realpathSync(path.join(root, clean.slice(pre.length)));
+      if ((real === root || real.startsWith(root + path.sep)) && fs.statSync(real).isFile()) return real;
+    } catch {}
+  }
+  return null;
+}
+const SKIP_DIR = /^(\.|node_modules$|Library$|\$RECYCLE)/;
+function listFiles(max = 300): Array<{ file: string; size: number; modified: string }> {
+  const out: Array<{ file: string; size: number; modified: string }> = [];
+  grants.forEach((root, i) => {
+    const walk = (dir: string, rel: string, depth: number) => {
+      if (out.length >= max || depth > 3) return;
+      let ents: fs.Dirent[] = [];
+      try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        if (out.length >= max) return;
+        if (e.name.startsWith('.')) continue;
+        const full = path.join(dir, e.name), r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) { if (!SKIP_DIR.test(e.name)) walk(full, r, depth + 1); }
+        else if (e.isFile()) { try { const st = fs.statSync(full); out.push({ file: `${label(root, i)}/${r}`, size: st.size, modified: st.mtime.toISOString().slice(0, 10) }); } catch {} }
+      }
+    };
+    walk(root, '', 0);
+  });
+  return out;
+}
+function newToken(paths: string[]): string {
+  prune();
+  const token = `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  picked.set(token, { paths, at: Date.now() });
+  return token;
+}
 const picked = new Map<string, Picked>();
 const TTL = 6 * 60 * 60_000;
 
@@ -20,10 +65,35 @@ export function setupUpload(getMainWindow: () => BrowserWindow | null, ensureDeb
       ? await dialog.showOpenDialog(win, { title: opts?.title || 'Choose file to upload', properties: opts?.multiple ? ['openFile', 'multiSelections'] : ['openFile'] })
       : await dialog.showOpenDialog({ properties: ['openFile'] });
     if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
-    prune();
-    const token = `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    picked.set(token, { paths: r.filePaths, at: Date.now() });
+    const token = newToken(r.filePaths);
     return { ok: true, token, names: r.filePaths.map(p => path.basename(p)), sizes: r.filePaths.map(p => { try { return fs.statSync(p).size; } catch { return 0; } }) };
+  });
+
+  // ── pasta liberada pra esta sessão ──
+  ipcMain.handle('upload:grant-folder', async () => {
+    const win = getMainWindow();
+    const r = win ? await dialog.showOpenDialog(win, { title: 'Allow the agent to use this folder (this session)', properties: ['openDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    let real = r.filePaths[0];
+    try { real = fs.realpathSync(real); } catch {}
+    if (!grants.includes(real)) grants.push(real);
+    return { ok: true, folder: label(real, grants.indexOf(real)) };
+  });
+  ipcMain.handle('upload:grants', () => grants.map((g, i) => ({ folder: label(g, i), path: g.replace(require('os').homedir(), '~') })));
+  ipcMain.handle('upload:revoke-all', () => { grants.length = 0; return { ok: true }; });
+  ipcMain.handle('upload:list-files', () => ({ ok: grants.length > 0, files: listFiles() }));
+  ipcMain.handle('upload:read-file', async (_e, id: string) => {
+    const p = resolveFile(id);
+    if (!p) return { ok: false, error: `"${id}" is not a file in a folder the user allowed — use a name from list_files` };
+    if (!extractText) return { ok: false, error: 'reading files is not available' };
+    const r = await extractText(p);
+    return r.ok ? { ok: true, text: String(r.text || '').slice(0, 6000) } : { ok: false, error: r.error };
+  });
+  ipcMain.handle('upload:token-for', (_e, ids: string[]) => {
+    const paths = (ids || []).map(resolveFile);
+    if (!paths.length || paths.some(p => !p)) return { ok: false, error: 'file not found in the folders the user allowed — use a name from list_files' };
+    return { ok: true, token: newToken(paths as string[]), names: (paths as string[]).map(p => path.basename(p)) };
   });
 
   ipcMain.handle('upload:set', async (_e, wcId: number, nodeId: number | null, token: string, at?: { x: number; y: number }) => {

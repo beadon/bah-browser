@@ -53,6 +53,12 @@ fronteira inteira entre o lado web/UI e o lado privilegiado (veja abaixo).
 - **Fuso horário:** como em todo navegador, os scripts da página leem seu fuso. O Bah também põe sua região e fuso no
   prompt do agente, que vai pro seu provedor de IA (fica local com modelo local). Escolha **UTC** em 🌍 Região e hora
   pra esconder dos sites.
+- **Arquivos do seu computador (uploads):** o agente nunca escolhe caminho. No `upload`, o Bah mostra um cartão e
+  *você* escolhe o arquivo no diálogo do SO (o agente só vê o nome). Ou você pode **liberar uma pasta nesta sessão**:
+  o agente então lista, lê PDF/Word/texto dela (ex.: escolher o currículo que combina com a vaga) e anexa arquivos
+  dela — tudo resolvido e conferido no processo principal (sem fuga por `../` ou symlink), até fechar o Bah ou
+  revogar (menu ⋮ → 📂 Pastas liberadas ao agente). Nada é enviado até o formulário do site ser enviado. Ver
+  [`src/main/upload.ts`](src/main/upload.ts).
 - **Proxy:** com um proxy configurado (no SO, no painel 🌐 Rede e proxy ou via `HTTPS_PROXY`), todo o
   tráfego do Bah passa por ele — é esse o objetivo. Senhas de proxy são digitadas na caixa do próprio Bah,
   salvas só se você marcar *Lembrar*, cifradas com o chaveiro do SO (`safeStorage`, arquivo

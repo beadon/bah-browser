@@ -27,7 +27,9 @@ export type BrowserAction =
   | { type: 'close_tab'; tab: number }
   | { type: 'click_ref'; ref: number }
   | { type: 'select_option'; ref: number; option: string }
-  | { type: 'upload'; ref: number; multiple?: boolean }
+  | { type: 'upload'; ref: number; multiple?: boolean; file?: string[] }
+  | { type: 'list_files'; query?: string }
+  | { type: 'read_file'; file: string }
   | { type: 'look_at'; ref?: number; x?: number; y?: number; w?: number; h?: number }
   | { type: 'find'; text: string }
   | { type: 'web_search'; query: string }
@@ -116,7 +118,9 @@ export function formatAction(action: BrowserAction): string {
     case 'click_ref': return `click_ref(@${action.ref})`;
     case 'look_at': return action.ref != null ? `look_at(@${action.ref})` : `look_at(${action.x},${action.y} ${action.w}x${action.h})`;
     case 'history_search': return `history_search("${shorten(action.query, 60)}")`;
-    case 'upload': return `upload(@${action.ref})`;
+    case 'upload': return `upload(@${action.ref}${action.file ? ` ${([] as string[]).concat(action.file).join(', ')}` : ''})`;
+    case 'list_files': return 'list_files()';
+    case 'read_file': return `read_file(${shorten(action.file, 60)})`;
     case 'suggest_time_zone': return `suggest_time_zone(${action.zone})`;
     case 'web_search': return `web_search("${shorten(action.query, 60)}")`;
     case 'find': return `find("${shorten(action.text, 50)}")`;
