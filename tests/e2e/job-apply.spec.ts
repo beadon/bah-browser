@@ -20,8 +20,11 @@ test('job application: bare Submit asks the user; cancel keeps it unsent, approv
   let sent = 0;
   const server = http.createServer((q, res) => {
     if (q.url === '/sent') { sent++; res.end('ok'); return; }
-    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(`<title>Apply: Support Engineer</title><h1>Support Engineer at Acme</h1>
+<h2>Matches your preferences</h2><ul>
+<li><a href="/viewjob?jk=a1">VP of IT Operations</a> Serve Robotics · Remote · $220,000 a year <button aria-label="Save job" aria-pressed="true">★</button></li>
+<li><a href="/viewjob?jk=b2">Engineering Manager</a> Adyen · San Francisco <button aria-label="Save job" aria-pressed="false">☆</button></li></ul>
 <form onsubmit="event.preventDefault(); fetch('/sent').then(() => document.title = 'SENT')">
 <label>Full name <input name="n" value="Pat Example"></label>
 <button type="button">Back</button> <button type="submit">Submit</button></form>`);
@@ -60,6 +63,11 @@ test('job application: bare Submit asks the user; cancel keeps it unsent, approv
       await sleep(500);
     }
     expect(answers).toEqual([]);
+    // The job cards reach the model as the job list, the saved one marked.
+    const ps: string[] = await app.evaluate(() => (global as any).__e2ePrompts || []);
+    expect(ps[1]).toContain('JOB LISTINGS ON THIS PAGE (2 found, 1 ★ saved)');
+    expect(ps[1]).toMatch(/1\. ★ SAVED · VP of IT Operations — Serve Robotics · Remote · \$220,000 a year[^\n]*→ http:\/\/127\.0\.0\.1:\d+\/viewjob\?jk=a1/);
+    expect(ps[1]).toMatch(/2\. Engineering Manager — Adyen/);
     expect(last).toMatch(/STEP 2: click_ref\(@\d+\)\nRESULT: \{"success":false,"reason":"user_cancelled"/);
     for (let i = 0; i < 20 && !sent; i++) await sleep(250);
     expect(sent).toBe(1);

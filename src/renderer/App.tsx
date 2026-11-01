@@ -2,6 +2,7 @@ import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 import { getPerm, setPerm, nextMode, applyAnswer, type PermKind, type PermMode, type PermAnswer } from './agent-permissions';
 import { isCarefulHost, CAREFUL_ALLOWED } from './careful-sites';
 import { namesStore } from './stores';
+import { JOB_LISTINGS_SCRIPT, formatJobListings, jobIdOf, type JobListing } from './job-listings';
 import { paceDelay, recordHit, backoff, isBackedOff, hostOf, BOT_CHECK_RE } from './pacing';
 import { ENGINES, engineOrder, engineForUrl, markBlocked, searchUrl, agentSearchLine, SEARCH_BLOCK_RE, preferredEngine, setPreferredEngine, type EngineId } from './search-engines';
 import { selectSkills, formatSkillsBlock, validateSkill, SKILL_STATES, SKILL_TASKS, SKILL_MAX_WORDS, type Skill } from '../shared/skills';
@@ -2410,6 +2411,8 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               // Candidatura a vaga: liga a skill job-apply e o freio do "Submit" puro do formulário.
               const commandIsJobs = /\b(jobs?|job (posting|listing|application|offer)s?|apply (to|for)|applying|career(s| page)?|hiring|(my |a )?(r[eé]sum[eé]|cv)|cover letter|indeed|glassdoor|greenhouse|workday|lever\.co|vagas?|candidat\w+|curr[ií]culo|emprego|empleo|trabajo)\b/i.test(command);
               const riskOpts = { jobs: commandIsJobs };
+              // Vagas já abertas nesta tarefa (ID da vaga no endereço): o bloco de vagas marca e aponta a próxima.
+              const openedJobIds = new Set<string>();
               const commandIsPeople = /\b(people|person|contacts?|who works|employees?|profiles?|recruiters?|founders?|ceo|cto|cfo|coo|vp|directors?|head of|managers? at|engineers? at|linkedin)\b/i.test(command);
               // Site cuidadoso: quantas navegações o agente já fez nele NESTA tarefa (máx. 1).
               let carefulNavs = 0;
@@ -3059,6 +3062,11 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   const dlButtons = commandWantsDownload
                     ? observation.interactive_elements.filter(e => DL_BUTTON_RE.test(String(e.text || (e as any).aria || '').trim())).slice(0, 3)
                     : [];
+                  // Tarefa de vaga: os cartões de vaga desta página, com o ★ de salvo (ver job-listings.ts).
+                  if (commandIsJobs) { const jid = jobIdOf(observation.url); if (jid) openedJobIds.add(jid); }
+                  const jobsBlock = commandIsJobs
+                    ? formatJobListings(await withTimeout(wv.executeJavaScript(JOB_LISTINGS_SCRIPT), 3000, [] as JobListing[]).catch(() => [] as JobListing[]), 8, openedJobIds)
+                    : '';
                   const dlButtonsBlock = dlButtons.length
                     ? `LIKELY DOWNLOAD BUTTON${dlButtons.length > 1 ? 'S' : ''} ON THIS PAGE (click to start the file; accepting the license/EULA is part of downloading):\n${dlButtons.map(e => `  [${e.id}] "${String(e.text || (e as any).aria || '').trim().slice(0, 60)}"`).join('\n')}`
                     : '';
@@ -3098,8 +3106,18 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     var tabWords = /^(overview|specifications|specs|tech specs|technical specifications|models|accessories|parts|reviews|details|documentation|downloads|features|support|description|q&a|vis[aã]o geral|especifica[cç][oõ]es|acess[oó]rios|avalia[cç][oõ]es|detalhes)$/i;
                     var tabs = Array.prototype.slice.call(document.querySelectorAll('[role=tablist]')).filter(visRow).some(function(t){ return t.querySelectorAll('[role=tab]').length >= 2; })
                       || Array.prototype.slice.call(document.querySelectorAll('a,button,[role=tab],li')).filter(visRow).filter(function(e){ return tabWords.test((e.innerText || '').trim()); }).length >= 2;
-                    return { promo: promo, dialog: label, closers: closers, options: opts, datepicker: datepicker, eula: eula, osSelector: osSel, searchbox: searchbox, tabs: tabs };
-                  })()`).catch(() => null), 2000, null) as { dialog: string; closers: string[]; options: string[]; datepicker: boolean; eula: boolean; osSelector: boolean; searchbox: boolean; tabs: boolean; promo?: string } | null;
+                    // Cartões: ≥3 irmãos visíveis do mesmo tipo (tag + classe), cada um com link e um pouco de texto —
+                    // lista de vagas, hotéis, produtos, e-mails… (ver skill card-list).
+                    var cards = Array.prototype.slice.call(document.querySelectorAll('ul,ol,div,section,main')).some(function(p){
+                      if (p.children.length < 3) return false;
+                      var kids = Array.prototype.slice.call(p.children).filter(function(c){ var t = (c.textContent || '').length; return t > 20 && t < 3000 && c.querySelector('a[href],[role=link],button') && visRow(c); });
+                      if (kids.length < 3) return false;
+                      var sig = function(c){ return c.tagName + '.' + String(c.className || '').split(/\s+/)[0]; };
+                      var n = {}; kids.forEach(function(c){ n[sig(c)] = (n[sig(c)] || 0) + 1; });
+                      return Object.keys(n).some(function(k){ return n[k] >= 3; });
+                    });
+                    return { promo: promo, dialog: label, closers: closers, options: opts, datepicker: datepicker, eula: eula, osSelector: osSel, searchbox: searchbox, tabs: tabs, cards: cards };
+                  })()`).catch(() => null), 2000, null) as { dialog: string; closers: string[]; options: string[]; datepicker: boolean; eula: boolean; osSelector: boolean; searchbox: boolean; tabs: boolean; cards?: boolean; promo?: string } | null;
                   const elFor = (txt: string) => observation.interactive_elements.find(e => {
                     const t = String(e.text || e.aria || '').replace(/\s+/g, ' ').trim().toLowerCase();
                     return t && (t === txt.toLowerCase() || t.startsWith(txt.toLowerCase().slice(0, 40)));
@@ -3133,7 +3151,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   const pageStates = [
                     uiState?.dialog ? 'dialog' : '', uiState?.options?.length ? 'suggestions' : '',
                     uiState?.datepicker ? 'datepicker' : '', uiState?.eula ? 'eula' : '', uiState?.osSelector ? 'os-selector' : '',
-                    uiState?.searchbox ? 'searchbox' : '', uiState?.tabs ? 'tabs' : '',
+                    uiState?.searchbox ? 'searchbox' : '', uiState?.tabs ? 'tabs' : '', uiState?.cards ? 'cards' : '',
                   ].filter(Boolean);
                   const stepSkills = selectSkills(allSkills, {
                     url: observation.url, states: pageStates,
@@ -3160,6 +3178,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     suggestBlock,
                     downloadsBlock,
                     dlButtonsBlock,
+                    jobsBlock,
                     skillsBlock,
                     '',
                     planBlock,
