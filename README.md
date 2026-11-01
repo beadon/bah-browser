@@ -63,6 +63,8 @@
 
 **👨‍💻 I want to hack on the code:** clone and run it — see [Running it](#running-it) below.
 
+**🤖 An AI agent is installing Bah for you?** Point it at [INSTALL-FOR-AGENTS.md](INSTALL-FOR-AGENTS.md) — step-by-step, with a check after each step.
+
 ---
 
 ## What it does
