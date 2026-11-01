@@ -167,6 +167,9 @@ proxy SOCKS / túnel `ssh -D`) · **PAC** (URL do script) · **Direto**, mais um
   Electron não, então o Bah lê o repositório do SO na inicialização (chaveiros do macOS, repositórios
   `Root`/`CA` do Windows, bundle de CAs do Linux) e soma essas raízes às padrão do Node — downloads na
   worker funcionam atrás de proxy com inspeção TLS também.
+- **Vazamento de IP pelo WebRTC:** com proxy em uso, o WebRTC só pode usar o proxy (`disable_non_proxied_udp`),
+  então a página não descobre o seu IP real por ele. Sem proxy (ou com app de VPN, que age no SO) vale o padrão
+  do Chrome. O Chromium não faz login em proxy SOCKS5 (usuário/senha); SOCKS5 sem senha funciona.
 
 ---
 

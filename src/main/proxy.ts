@@ -3,7 +3,7 @@
 //  • vale pra TODAS as sessões do Bah (abas, janelas de login, requisições do próprio Bah)
 //  • login no proxy (407): credencial salva (cifrada com o chaveiro do SO) ou pergunta pra pessoa
 // Sem config salva, HTTPS_PROXY/HTTP_PROXY/NO_PROXY do ambiente (TI pode pré-configurar).
-import { app, ipcMain, session, safeStorage, type BrowserWindow, type Session } from 'electron';
+import { app, ipcMain, session, safeStorage, webContents, type BrowserWindow, type Session, type WebContents } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -26,6 +26,16 @@ let current: ProxyConfig = { mode: 'system' };
 
 async function applyTo(s: Session): Promise<void> {
   try { await s.setProxy(toElectronProxy(current) as Electron.ProxyConfig); await s.closeAllConnections?.(); } catch (e: any) { console.warn('[Proxy] setProxy failed:', e?.message || e); }
+}
+
+// WebRTC fala UDP direto e ignora o proxy → o IP real vaza (STUN). Com proxy ativo, só UDP pelo
+// proxy (na prática: TURN/TCP). Sem proxy fica o padrão do Chrome, pra não piorar chamadas de vídeo.
+let rtcPolicy: 'default' | 'disable_non_proxied_udp' = 'default';
+const setRtc = (wc: WebContents) => { try { if (!wc.isDestroyed()) wc.setWebRTCIPHandlingPolicy(rtcPolicy); } catch {} };
+async function refreshRtcPolicy(): Promise<void> {
+  const via = current.mode === 'direct' ? 'DIRECT' : await proxyFor('https://www.example.com/');
+  rtcPolicy = via.startsWith('DIRECT') ? 'default' : 'disable_non_proxied_udp';
+  webContents.getAllWebContents().forEach(setRtc);
 }
 
 // ── credenciais do proxy (cifradas com o chaveiro do SO; nunca vão pro agente/modelo) ──
@@ -51,13 +61,16 @@ export function setupProxy(getMainWindow: () => BrowserWindow | null): void {
   const track = (s: Session) => { if (!knownSessions.has(s)) { knownSessions.add(s); void applyTo(s); } };
   track(session.defaultSession);
   app.on('session-created', track);
+  app.on('web-contents-created', (_e, wc) => setRtc(wc));
+  void Promise.all([...knownSessions].map(applyTo)).then(refreshRtcPolicy);
 
-  ipcMain.handle('proxy:get', () => ({ config: current, fromEnv: !fs.existsSync(cfgPath()) && !!configFromEnv(), hasSavedPassword: Object.keys(loadCreds()).length > 0 }));
+  ipcMain.handle('proxy:get', () => ({ config: current, webrtc: rtcPolicy, fromEnv: !fs.existsSync(cfgPath()) && !!configFromEnv(), hasSavedPassword: Object.keys(loadCreds()).length > 0 }));
   ipcMain.handle('proxy:set', async (_e, c: ProxyConfig) => {
     if (!c || !['system', 'manual', 'pac', 'direct'].includes(c.mode)) return { ok: false, error: 'invalid mode' };
     current = { mode: c.mode, server: String(c.server || '').trim() || undefined, pacUrl: String(c.pacUrl || '').trim() || undefined, bypass: String(c.bypass || '').trim() || undefined };
     try { fs.writeFileSync(cfgPath(), JSON.stringify(current, null, 2)); } catch {}
     await Promise.all([...knownSessions].map(applyTo));
+    await refreshRtcPolicy();
     return { ok: true, config: current };
   });
   ipcMain.handle('proxy:forget-passwords', () => { forgetCreds(); return { ok: true }; });
