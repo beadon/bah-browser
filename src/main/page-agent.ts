@@ -34,6 +34,7 @@ export type AgentAction =
   | { type: 'upload'; ref: number; multiple?: boolean; file?: string[] }
   | { type: 'list_files'; query?: string }
   | { type: 'dialog'; accept: boolean; text?: string }
+  | { type: 'click_role'; role: string; name?: string; nth?: number }
   | { type: 'read_file'; file: string }
   | { type: 'look_at'; ref?: number; x?: number; y?: number; w?: number; h?: number }
   | { type: 'find'; text: string }
@@ -94,6 +95,7 @@ const VALID_ACTIONS = new Set([
   'upload',
   'list_files',
   'dialog',
+  'click_role',
   'read_file',
   'list_downloads',
   'cancel_download',
@@ -389,6 +391,8 @@ export class PageAgent {
         { const f = action.file ?? action.files ?? action.path;
           const files = (Array.isArray(f) ? f : f != null && f !== '' ? [f] : []).map((x: any) => String(x).trim()).filter(Boolean).slice(0, 10);
           return { type: 'upload', ref: toRef(action.ref), multiple: !!action.multiple || files.length > 1, ...(files.length ? { file: files } : {}) }; }
+      case 'click_role':
+        return { type: 'click_role', role: String(action.role ?? '').trim().toLowerCase(), ...(action.name ?? action.text ?? action.label ? { name: String(action.name ?? action.text ?? action.label).trim() } : {}), ...(toOptionalNumber(action.nth) ? { nth: toOptionalNumber(action.nth) } : {}) };
       case 'dialog': {
         const acc = action.accept ?? action.value ?? (typeof action.answer === 'string' ? !/^(dismiss|cancel|no|false)$/i.test(action.answer) : true);
         const text = action.text ?? action.prompt_text ?? action.promptText;
@@ -506,6 +510,7 @@ export function validateAction(a: AgentAction): string | null {
       return finiteInt(a.ref) ? null : `${a.type} needs a finite non-negative integer "ref", got ${JSON.stringify((a as any).ref)}`;
     case 'list_files': return null;
     case 'dialog': return null;
+    case 'click_role': return nonEmpty(a.role) ? null : 'click_role needs a "role" (button, link, textbox, checkbox, radio, combobox, tab, menuitem, option, switch)';
     case 'read_file': return nonEmpty(a.file) ? null : 'read_file needs a "file" name from list_files';
     case 'upload':
       return finiteInt(a.ref) ? null : `upload needs the "ref" of the upload button or file field, got ${JSON.stringify((a as any).ref)}`;

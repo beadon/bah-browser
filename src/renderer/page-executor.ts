@@ -30,6 +30,7 @@ export type BrowserAction =
   | { type: 'upload'; ref: number; multiple?: boolean; file?: string[] }
   | { type: 'list_files'; query?: string }
   | { type: 'dialog'; accept: boolean; text?: string }
+  | { type: 'click_role'; role: string; name?: string; nth?: number }
   | { type: 'read_file'; file: string }
   | { type: 'look_at'; ref?: number; x?: number; y?: number; w?: number; h?: number }
   | { type: 'find'; text: string }
@@ -123,6 +124,7 @@ export function formatAction(action: BrowserAction): string {
     case 'history_search': return `history_search("${shorten(action.query, 60)}")`;
     case 'upload': return `upload(@${action.ref}${action.file ? ` ${([] as string[]).concat(action.file).join(', ')}` : ''})`;
     case 'list_files': return 'list_files()';
+    case 'click_role': return `click_role(${action.role}${action.name ? ` "${shorten(action.name, 40)}"` : ''}${action.nth ? ` #${action.nth}` : ''})`;
     case 'dialog': return `dialog(${action.accept ? 'accept' : 'dismiss'}${action.text != null ? ` "${shorten(action.text, 40)}"` : ''})`;
     case 'read_file': return `read_file(${shorten(action.file, 60)})`;
     case 'suggest_time_zone': return `suggest_time_zone(${action.zone})`;

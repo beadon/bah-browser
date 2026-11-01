@@ -11,6 +11,7 @@ import { ProxySettings, ProxyAuthPrompt } from './components/ProxyPanel';
 import { SitePermissionBar, SitePermissionsPanel } from './components/SitePermissions';
 import { RegionPanel } from './components/RegionPanel';
 import { JsDialogHost } from './components/JsDialogHost';
+import { matchRole } from '../shared/role-target';
 import { agentDialogsStart, agentDialogsStop, agentDialogsTab, armDialog, drainDialogLog } from './js-dialogs';
 import { refreshRegion, onRegionState, regionState, agentRegionLine, askedNetworkCountries } from './region-state';
 import { prefetchGpuInfo, gpuInfo, gpuIsLoaded } from './gpu-info';
@@ -2955,6 +2956,14 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     onProgress({ kind: 'status', message: `⚡ batch of ${result.actions.length} actions planned` });
                   }
                   } // end if (!fromQueue)
+                  // click_role → click_ref do elemento que casa (passa pelos mesmos freios e verificações).
+                  let roleMiss = '';
+                  if (action?.type === 'click_role') {
+                    const hits = matchRole(observation.interactive_elements, action.role, action.name);
+                    const pick = hits[Math.max(1, action.nth || 1) - 1];
+                    if (pick) { onProgress({ kind: 'status', message: `🎯 ${action.role}${action.name ? ` "${action.name}"` : ''}${action.nth ? ` #${action.nth}` : ''} → @${pick.id}` }); action = { type: 'click_ref', ref: pick.id }; }
+                    else roleMiss = hits.length ? `only ${hits.length} ${action.role}(s) match "${action.name || ''}" — nth ${action.nth} does not exist` : `no ${action.role} labelled "${action.name || ''}" in INTERACTIVE ELEMENTS (scroll, use find, or pick a ref)`;
+                  }
                   if (!action) {
                     finishRun('failed', 'AI did not return an action.');
                     return { error: 'AI did not return an action.', thought: thoughts.join('\n'), results: allResults };
@@ -4382,6 +4391,8 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       }
                       toolResult = { success: true, info: { closed: action.tab } };
                     } else toolResult = { success: false, error: `Tab ${action.tab} not found` };
+                  } else if (action.type === 'click_role') {
+                    toolResult = { success: false, error: roleMiss || 'no matching element' };
                   } else if (action.type === 'dialog') {
                     // Arma a resposta do PRÓXIMO alert/confirm/prompt desta aba (vale 60 s).
                     const wcIdDlg = (wv as any).getWebContentsId?.();
