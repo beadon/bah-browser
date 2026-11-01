@@ -88,6 +88,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Real OS-level input
   realClick: (wcId: number, x: number, y: number, backendNodeId?: number) =>
     ipcRenderer.invoke('input:click', wcId, x, y, backendNodeId),
+  pointer: (wcId: number, op: { kind: 'hover' | 'dblclick' | 'drag' | 'focus'; x: number; y: number; x2?: number; y2?: number; backendNodeId?: number }) =>
+    ipcRenderer.invoke('input:pointer', wcId, op),
   realType: (wcId: number, text: string) =>
     ipcRenderer.invoke('input:type', wcId, text),
   abortTyping: () => ipcRenderer.invoke('input:type-abort'),

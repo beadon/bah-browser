@@ -32,6 +32,9 @@ export type BrowserAction =
   | { type: 'web_search'; query: string }
   | { type: 'history_search'; query: string }
   | { type: 'back' }
+  | { type: 'hover' | 'dblclick' | 'focus'; ref: number }
+  | { type: 'drag'; ref: number; to_ref: number }
+  | { type: 'forward' | 'reload' }
   | { type: 'check' | 'uncheck'; ref: number }
   | { type: 'fill_ref'; ref: number; value: string }
   | { type: 'click_text'; text: string; nth?: number }
@@ -114,6 +117,10 @@ export function formatAction(action: BrowserAction): string {
     case 'web_search': return `web_search("${shorten(action.query, 60)}")`;
     case 'find': return `find("${shorten(action.text, 50)}")`;
     case 'back': return 'back()';
+    case 'forward': return 'forward()';
+    case 'reload': return 'reload()';
+    case 'hover': case 'dblclick': case 'focus': return `${action.type}(@${action.ref})`;
+    case 'drag': return `drag(@${action.ref} → @${action.to_ref})`;
     case 'check': case 'uncheck': return `${action.type}(@${action.ref})`;
     case 'select_option': return `select_option(@${action.ref}, "${shorten(action.option, 50)}")`;
     case 'fill_ref': return `fill_ref(@${action.ref}, "${shorten(action.value)}")`;

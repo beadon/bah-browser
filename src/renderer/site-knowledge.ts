@@ -713,7 +713,9 @@ export function detectQuickAction(command: string, opts?: { forceImage?: boolean
     const isDocOrOpenRef = /\b(pdf|documento|anexad\w*|attach\w*|adjunt\w*)\b/.test(n) || REFERS_TO_OPEN_ITEM.test(n);
     // Loja NOMEADA ("na amazon", "on ebay") → a pessoa quer aquela loja: cede pro agente (que
     // tem a skill da loja), em vez do atalho de Google Shopping — que nem é a loja pedida.
-    if (isPrice && !isQuote && !isDocOrOpenRef && !namesStore(command)) {
+    // Viagem (hotel/hospedagem/voo) não é produto do Shopping: o agente faz a busca no site de reserva.
+    const isTravel = /\b(hotels?|motels?|lodging|accommodations?|airbnb|hostels?|resorts?|inn|ski trip|flights?|airfare|rental cars?|car rentals?|hot[eé]is|hospedage\w*|pousadas?|voos?|passage\w*|hoteles|vuelos|alojamiento)\b/.test(n);
+    if (isPrice && !isQuote && !isDocOrOpenRef && !namesStore(command) && !isTravel) {
       const STRIP = new Set(('procur\\w preco precos preço preços quanto custa ta esta é mais barato barata baratos baratas ' +
         'onde comprar compro acho compare comparar comparacao de do da dos das o a os as um uma menor valor por favor me ' +
         'quero queria achar encontrar ver mostra mostrar lista qual quais melhor ' +

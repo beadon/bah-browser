@@ -35,6 +35,9 @@ export type AgentAction =
   | { type: 'web_search'; query: string }
   | { type: 'history_search'; query: string }
   | { type: 'back' }
+  | { type: 'hover' | 'dblclick' | 'focus'; ref: number }
+  | { type: 'drag'; ref: number; to_ref: number }
+  | { type: 'forward' | 'reload' }
   | { type: 'check' | 'uncheck'; ref: number }
   | { type: 'fill_ref'; ref: number; value: string }
   | { type: 'click_text'; text: string; nth?: number }
@@ -67,6 +70,12 @@ const BATCHABLE_ACTIONS = new Set(['fill_ref', 'fill', 'type', 'press', 'click_r
 
 const VALID_ACTIONS = new Set([
   'plan',
+  'hover',
+  'dblclick',
+  'focus',
+  'drag',
+  'forward',
+  'reload',
   'history_search',
   'web_search',
   'look_at',
@@ -355,6 +364,12 @@ export class PageAgent {
         return { type: 'find', text: String(action.text ?? action.query ?? action.label ?? '').trim() };
       case 'back':
         return { type: 'back' };
+      case 'forward': case 'reload':
+        return { type: action.type };
+      case 'hover': case 'dblclick': case 'focus':
+        return { type: action.type, ref: toRef(action.ref) };
+      case 'drag':
+        return { type: 'drag', ref: toRef(action.ref ?? action.from_ref ?? action.from), to_ref: toRef(action.to_ref ?? action.to ?? action.target_ref) };
       case 'check': case 'uncheck':
         return { type: action.type, ref: toRef(action.ref) };
       case 'select_option':
@@ -448,7 +463,11 @@ export function validateAction(a: AgentAction): string | null {
     case 'history_search': return nonEmpty(a.query) ? null : 'history_search needs a non-empty "query"';
     case 'web_search': return nonEmpty(a.query) ? null : 'web_search needs a non-empty "query"';
     case 'find': return nonEmpty(a.text) ? null : 'find needs the "text" to look for';
-    case 'back': return null;
+    case 'back': case 'forward': case 'reload': return null;
+    case 'hover': case 'dblclick': case 'focus':
+      return finiteInt(a.ref) ? null : `${a.type} needs a finite non-negative integer "ref", got ${JSON.stringify((a as any).ref)}`;
+    case 'drag':
+      return finiteInt(a.ref) && finiteInt(a.to_ref) ? null : 'drag needs "ref" (what to drag) and "to_ref" (where to drop) as element ids';
     case 'check': case 'uncheck':
       return finiteInt(a.ref) ? null : `${a.type} needs a finite non-negative integer "ref", got ${JSON.stringify((a as any).ref)}`;
     case 'select_option':

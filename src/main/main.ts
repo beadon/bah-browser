@@ -1531,10 +1531,12 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
         const script = JSON.parse(process.env.E2E_MOCK_SCRIPT);
         let a = script[g.__e2ePrompts.length - 1] ?? { type: 'done', reason: 'E2E script finished.', success: true };
         // "ref": "__REF:<text>__" → the [N] of the first listed element whose line contains <text>.
-        if (typeof a.ref === 'string' && a.ref.startsWith('__REF:')) {
-          const want = a.ref.slice(6, -2).toLowerCase();
-          const line = String(pageContent ?? '').split('\n').find(l => /^\s*\*?\[\d+\]/.test(l) && l.toLowerCase().includes(want));
-          a = { ...a, ref: line ? Number((line.match(/\[(\d+)\]/) || [])[1]) : -1 };
+        for (const key of ['ref', 'to_ref']) {
+          if (typeof a[key] === 'string' && a[key].startsWith('__REF:')) {
+            const want = a[key].slice(6, -2).toLowerCase();
+            const line = String(pageContent ?? '').split('\n').find(l => /^\s*\*?\[\d+\]/.test(l) && l.toLowerCase().includes(want));
+            a = { ...a, [key]: line ? Number((line.match(/\[(\d+)\]/) || [])[1]) : -1 };
+          }
         }
         return {
           thought: `E2E script step ${g.__e2ePrompts.length}`,
@@ -1885,6 +1887,70 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
       await sleepMs(rnd(60, 130));
       wc.sendInputEvent({ type: 'mouseUp', x: tx, y: ty, button: 'left', clickCount: 1 } as any);
       return { success: true, info: { x: tx, y: ty, refreshed: !!fresh } };
+    } catch (e: any) {
+      return { success: false, error: String(e?.message ?? e) };
+    }
+  });
+
+  // Ponteiro além do clique (paridade com agent-browser): hover, dblclick, drag, focus — mesmo
+  // caminho de input REAL do clique (sendInputEvent), em coordenadas do viewport da aba.
+  ipcMain.handle('input:pointer', async (_e, wcId: number, op: { kind: 'hover' | 'dblclick' | 'drag' | 'focus'; x: number; y: number; x2?: number; y2?: number; backendNodeId?: number }) => {
+    const wc = webContents.fromId(wcId);
+    if (!wc) return { success: false, error: 'webContents not found' };
+    try {
+      wc.focus();
+      const move = async (x: number, y: number, steps = 5) => {
+        for (let i = 1; i <= steps; i++) { wc.sendInputEvent({ type: 'mouseMove', x: Math.round(x - (steps - i) * 6), y: Math.round(y - (steps - i) * 3) } as any); await sleepMs(rnd(10, 25)); }
+      };
+      if (op.kind === 'focus') {
+        if (op.backendNodeId == null) return { success: false, error: 'focus needs an element' };
+        await sharedEnsureDebugger(wc, wcId);
+        await wc.debugger.sendCommand('DOM.focus', { backendNodeId: op.backendNodeId });
+        return { success: true };
+      }
+      await move(op.x, op.y);
+      // Re-mede o alvo DEPOIS de mover o ponteiro (menu de hover fechando, layout que desliza): o
+      // clique cai onde o elemento ESTÁ agora, como o input:click.
+      if (op.backendNodeId != null) {
+        try {
+          await sharedEnsureDebugger(wc, wcId);
+          const bm = await wc.debugger.sendCommand('DOM.getBoxModel', { backendNodeId: op.backendNodeId }) as any;
+          const q = bm?.model?.border;
+          if (q && q.length === 8) {
+            op.x = Math.round((Math.min(q[0], q[2], q[4], q[6]) + Math.max(q[0], q[2], q[4], q[6])) / 2);
+            op.y = Math.round((Math.min(q[1], q[3], q[5], q[7]) + Math.max(q[1], q[3], q[5], q[7])) / 2);
+            wc.sendInputEvent({ type: 'mouseMove', x: op.x, y: op.y } as any);
+            await sleepMs(rnd(30, 60));
+          }
+        } catch { /* alvo sumiu: usa a posição medida antes */ }
+      }
+      if (op.kind === 'hover') { await sleepMs(rnd(300, 600)); return { success: true, info: { x: op.x, y: op.y } }; }
+      if (op.kind === 'dblclick') {
+        // Pelo CDP: o sendInputEvent do Electron não gera o evento 'dblclick' da página com clickCount 2.
+        await sharedEnsureDebugger(wc, wcId);
+        for (const clickCount of [1, 2]) {
+          await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: op.x, y: op.y, button: 'left', clickCount });
+          await sleepMs(rnd(30, 60));
+          await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: op.x, y: op.y, button: 'left', clickCount });
+          await sleepMs(rnd(50, 90));
+        }
+        return { success: true };
+      }
+      if (op.kind === 'drag') {
+        if (op.x2 == null || op.y2 == null) return { success: false, error: 'drag needs a target' };
+        wc.sendInputEvent({ type: 'mouseDown', x: op.x, y: op.y, button: 'left', clickCount: 1 } as any);
+        await sleepMs(rnd(120, 200));
+        const steps = 12;
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          wc.sendInputEvent({ type: 'mouseMove', x: Math.round(op.x + (op.x2 - op.x) * t), y: Math.round(op.y + (op.y2 - op.y) * t), button: 'left', buttons: 1 } as any);
+          await sleepMs(rnd(15, 35));
+        }
+        await sleepMs(rnd(80, 150));
+        wc.sendInputEvent({ type: 'mouseUp', x: op.x2, y: op.y2, button: 'left', clickCount: 1 } as any);
+        return { success: true };
+      }
+      return { success: false, error: `unknown pointer op ${(op as any).kind}` };
     } catch (e: any) {
       return { success: false, error: String(e?.message ?? e) };
     }
