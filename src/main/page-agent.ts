@@ -36,6 +36,9 @@ export type AgentAction =
   | { type: 'dialog'; accept: boolean; text?: string }
   | { type: 'click_role'; role: string; name?: string; nth?: number }
   | { type: 'get'; ref: number }
+  | { type: 'save_pdf'; name?: string }
+  | { type: 'screenshot'; full?: boolean; name?: string }
+  | { type: 'clipboard'; read?: boolean; write?: string }
   | { type: 'keydown'; key: string }
   | { type: 'keyup'; key: string }
   | { type: 'insert_text'; text: string }
@@ -101,6 +104,9 @@ const VALID_ACTIONS = new Set([
   'dialog',
   'click_role',
   'get',
+  'save_pdf',
+  'screenshot',
+  'clipboard',
   'keydown',
   'keyup',
   'insert_text',
@@ -399,6 +405,12 @@ export class PageAgent {
         { const f = action.file ?? action.files ?? action.path;
           const files = (Array.isArray(f) ? f : f != null && f !== '' ? [f] : []).map((x: any) => String(x).trim()).filter(Boolean).slice(0, 10);
           return { type: 'upload', ref: toRef(action.ref), multiple: !!action.multiple || files.length > 1, ...(files.length ? { file: files } : {}) }; }
+      case 'save_pdf':
+        return { type: 'save_pdf', ...(action.name || action.filename ? { name: String(action.name ?? action.filename).slice(0, 80) } : {}) };
+      case 'screenshot':
+        return { type: 'screenshot', full: action.full !== false && action.full_page !== false, ...(action.name || action.filename ? { name: String(action.name ?? action.filename).slice(0, 80) } : {}) };
+      case 'clipboard':
+        return { type: 'clipboard', ...(action.write != null || action.text != null ? { write: String(action.write ?? action.text) } : { read: true }) };
       case 'get':
         return { type: 'get', ref: toRef(action.ref) };
       case 'keydown': case 'keyup':
@@ -524,6 +536,7 @@ export function validateAction(a: AgentAction): string | null {
       return finiteInt(a.ref) ? null : `${a.type} needs a finite non-negative integer "ref", got ${JSON.stringify((a as any).ref)}`;
     case 'list_files': return null;
     case 'dialog': return null;
+    case 'save_pdf': case 'screenshot': case 'clipboard': return null;
     case 'get': return finiteInt(a.ref) ? null : 'get needs the "ref" of an element';
     case 'keydown': case 'keyup': return nonEmpty(a.key) ? null : `${a.type} needs a "key"`;
     case 'insert_text': return nonEmpty(a.text) ? null : 'insert_text needs "text"';

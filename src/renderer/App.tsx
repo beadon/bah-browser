@@ -136,6 +136,10 @@ declare global {
       abortTyping?: () => Promise<any>;
       realKey?: (wcId: number, key: string) => Promise<any>;
       selectAll?: (wcId: number) => Promise<any>;
+      savePdf?: (wcId: number, name?: string) => Promise<any>;
+      pageScreenshot?: (wcId: number, full: boolean, name?: string) => Promise<any>;
+      clipboardReadText?: () => Promise<string>;
+      clipboardWriteText?: (text: string) => Promise<any>;
       inspect?: (wcId: number, target: any) => Promise<{ ok: boolean; state?: any; error?: string }>;
       keyState?: (wcId: number, key: string, down: boolean) => Promise<any>;
       insertText?: (wcId: number, text: string) => Promise<any>;
@@ -1501,10 +1505,10 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   <span className="menu-label">{t('menu.switchModel')}</span>
                   <span className={`menu-switch ${switchModelSilently ? 'on' : ''}`}>{switchModelSilently ? 'ON' : 'OFF'}</span>
                 </button>
-                {(['userTabs', 'history'] as PermKind[]).map(k => (
+                {(['userTabs', 'history', 'clipboard'] as PermKind[]).map(k => (
                   <button key={k} className="menu-item" onClick={() => { setPerm(k, nextMode(getPerm(k))); setPermTick(x => x + 1); }} title={t('menu.agentPermTitle')}>
-                    <span className="menu-ic">{k === 'userTabs' ? '🗂️' : '🕘'}</span>
-                    <span className="menu-label">{t(k === 'userTabs' ? 'menu.agentPermTabs' : 'menu.agentPermHistory')}</span>
+                    <span className="menu-ic">{k === 'userTabs' ? '🗂️' : k === 'clipboard' ? '📋' : '🕘'}</span>
+                    <span className="menu-label">{t(k === 'userTabs' ? 'menu.agentPermTabs' : k === 'clipboard' ? 'menu.agentPermClipboard' : 'menu.agentPermHistory')}</span>
                     <span className={`menu-switch ${getPerm(k) === 'allow' ? 'on' : ''}`}>{t(`menu.perm.${getPerm(k)}` as any)}</span>
                   </button>
                 ))}
@@ -1967,7 +1971,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                 const mode = getPerm(kind);
                 if (mode === 'allow') return true;
                 if (mode === 'deny') return false;
-                const label = kind === 'userTabs' ? 'one of your tabs' : 'your browsing history';
+                const label = kind === 'userTabs' ? 'one of your tabs' : kind === 'clipboard' ? 'what you copied (clipboard)' : 'your browsing history';
                 const answer = await new Promise<PermAnswer>((resolve) => {
                   onProgress({ kind: 'confirm', risk: 'permission', label, title: `🔐 The agent wants to use ${label}`,
                     message: `${what}\nYou can change this later in the menu.`,
@@ -4395,6 +4399,14 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       }
                       toolResult = { success: true, info: { closed: action.tab } };
                     } else toolResult = { success: false, error: `Tab ${action.tab} not found` };
+                  } else if ((action.type === 'save_pdf' || action.type === 'screenshot') && wcId != null) {
+                    const r = action.type === 'save_pdf' ? await window.electronAPI?.savePdf?.(wcId, action.name) : await window.electronAPI?.pageScreenshot?.(wcId, action.full !== false, action.name);
+                    toolResult = r ?? { success: false, error: 'not available' };
+                    if (r?.success) onProgress({ kind: 'status', message: `💾 Saved ${r.info.path}` });
+                  } else if (action.type === 'clipboard') {
+                    if (action.write != null) toolResult = await window.electronAPI?.clipboardWriteText?.(action.write);
+                    else if (!(await askPermission('clipboard', 'Read the text you last copied (clipboard).'))) toolResult = { success: false, error: 'The user did not allow reading their clipboard.' };
+                    else { const txt = await window.electronAPI?.clipboardReadText?.() ?? ''; history += `\nCLIPBOARD (what the user copied): ${txt || '(empty)'}`; toolResult = { success: true, info: { chars: txt.length } }; }
                   } else if (action.type === 'get') {
                     const el = observation.interactive_elements.find(e => e.id === action.ref);
                     const wcIdG = (wv as any).getWebContentsId?.();
@@ -4816,7 +4828,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   // Internal actions (plan/store/extract_text) never change the page — skip the
                   // settle + re-observe machinery (10-20s on heavy pages) and reuse the current state.
                   const pageNeutralAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog' || action.type === 'get'
+                    || action.type === 'look_at' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog' || action.type === 'get' || action.type === 'save_pdf' || action.type === 'screenshot' || action.type === 'clipboard'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud';
@@ -4880,7 +4892,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   });
                   // Internal-state actions (plan/store/extract) don't change the page — don't penalize them
                   const internalAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog' || action.type === 'get'
+                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog' || action.type === 'get' || action.type === 'save_pdf' || action.type === 'screenshot' || action.type === 'clipboard'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud' || action.type === 'wait';

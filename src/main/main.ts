@@ -50,6 +50,7 @@ import { setupRegion, getTimezoneOverride } from './region';
 import { setupUpload, setUploadTextExtractor } from './upload';
 import { attachJsDialogs, setupJsDialogs } from './js-dialogs';
 import { setupFrames } from './frames';
+import { setupPageSave } from './page-save';
 import { loadSystemCAs, installCAs } from './system-ca';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
@@ -3487,6 +3488,7 @@ app.whenReady().then(async () => {
   setupUpload(() => mainWindow, sharedEnsureDebugger);
   setupJsDialogs();
   setupFrames(sharedEnsureDebugger);
+  setupPageSave(sharedEnsureDebugger);
   loadSystemCAs().then((pems) => { systemCAs = pems; const n = installCAs(pems); console.log(`[SystemCA] ${pems.length} OS certificates, ${n} added to Node`); }).catch(() => {});
   {
     const browsingSession = session.fromPartition('persist:browser');

@@ -32,6 +32,9 @@ export type BrowserAction =
   | { type: 'dialog'; accept: boolean; text?: string }
   | { type: 'click_role'; role: string; name?: string; nth?: number }
   | { type: 'get'; ref: number }
+  | { type: 'save_pdf'; name?: string }
+  | { type: 'screenshot'; full?: boolean; name?: string }
+  | { type: 'clipboard'; read?: boolean; write?: string }
   | { type: 'keydown'; key: string }
   | { type: 'keyup'; key: string }
   | { type: 'insert_text'; text: string }
@@ -130,6 +133,9 @@ export function formatAction(action: BrowserAction): string {
     case 'upload': return `upload(@${action.ref}${action.file ? ` ${([] as string[]).concat(action.file).join(', ')}` : ''})`;
     case 'list_files': return 'list_files()';
     case 'get': return `get(@${action.ref})`;
+    case 'save_pdf': return 'save_pdf()';
+    case 'screenshot': return `screenshot(${action.full === false ? 'viewport' : 'full page'})`;
+    case 'clipboard': return action.write != null ? `clipboard(write ${action.write.length} chars)` : 'clipboard(read)';
     case 'keydown': return `keydown(${action.key})`;
     case 'keyup': return `keyup(${action.key})`;
     case 'insert_text': return `insert_text("${shorten(action.text, 40)}")`;
