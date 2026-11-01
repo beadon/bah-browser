@@ -135,6 +135,7 @@ declare global {
       abortTyping?: () => Promise<any>;
       realKey?: (wcId: number, key: string) => Promise<any>;
       selectAll?: (wcId: number) => Promise<any>;
+      waitNetworkIdle?: (wcId: number, idleMs: number, timeoutMs: number) => Promise<{ ok: boolean; waitedMs?: number; error?: string }>;
       frameClick?: (wcId: number, key: string, id: number) => Promise<any>;
       frameFill?: (wcId: number, key: string, id: number, value: string) => Promise<{ ok: boolean; value?: string; error?: string }>;
       getFramesAx?: (wcId: number) => Promise<{ ok: boolean; frames: Array<{ key: string; label: string; nodes: any[] }> }>;
@@ -4716,6 +4717,38 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                         }
                       }
                     }
+                  } else if (action.type === 'wait' && (action.text || action.gone || action.url || action.load)) {
+                    // Espera por CONDIÇÃO (texto aparece/some, URL, carregamento) — termina assim que for verdade.
+                    const cap = Math.min(Math.max(Number(action.timeout) || 15_000, 1000), 60_000);
+                    const t0 = Date.now();
+                    const norm = (x: string) => x.toLowerCase().replace(/\s+/g, ' ');
+                    const urlOk = (u: string) => {
+                      const want = action.url!;
+                      if (!want.includes('*')) return u.includes(want);
+                      const re = new RegExp('^' + want.split('**').map(p => p.split('*').map(q => q.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')).join('.*') + '$');
+                      return re.test(u) || re.test(u.replace(/^https?:\/\/[^/]+/, ''));
+                    };
+                    let met = false, why = '';
+                    if (action.load === 'networkidle' && wcId != null) {
+                      const r = await window.electronAPI?.waitNetworkIdle?.(wcId, 500, cap);
+                      met = !!r?.ok; why = r?.error || '';
+                    } else {
+                      while (Date.now() - t0 < cap) {
+                        throwIfCancelled();
+                        const body = action.text || action.gone
+                          ? norm(String(await withTimeout(wv.executeJavaScript('document.body ? document.body.innerText : ""').catch(() => ''), 3000, '')))
+                          : '';
+                        met = (!action.text || body.includes(norm(action.text)))
+                          && (!action.gone || !body.includes(norm(action.gone)))
+                          && (!action.url || urlOk(wv.getURL()))
+                          && (action.load !== 'load' || !wv.isLoading());
+                        if (met) break;
+                        await new Promise(r => setTimeout(r, 300));
+                      }
+                    }
+                    const what = action.text ? `text "${action.text}"` : action.gone ? `"${action.gone}" to disappear` : action.url ? `URL ${action.url}` : `page ${action.load}`;
+                    toolResult = met ? { success: true, info: { waitedFor: what, waitedMs: Date.now() - t0 } }
+                      : { success: false, error: `Waited ${Math.round((Date.now() - t0) / 1000)}s for ${what} — not yet.${why ? ' ' + why : ''} Re-check the page; it may need another action.` };
                   } else if (action.type === 'wait' && !action.selector) {
                     // `wait` simples não toca a página: dorme aqui (máx. 60s). Antes passava pelo
                     // teto de 12s das ações de página → wait(15000) "dava timeout" com a mensagem

@@ -49,7 +49,7 @@ export type BrowserAction =
   | { type: 'press'; key: string }
   | { type: 'navigate'; url: string }
   | { type: 'scroll'; direction: 'up' | 'down' | 'top' | 'bottom'; amount?: number }
-  | { type: 'wait'; ms?: number; selector?: string; timeout?: number }
+  | { type: 'wait'; ms?: number; selector?: string; timeout?: number; text?: string; gone?: string; url?: string; load?: 'load' | 'networkidle' }
   | { type: 'done'; reason: string; success: boolean };
 
 export interface InteractiveElement {
@@ -143,7 +143,7 @@ export function formatAction(action: BrowserAction): string {
     case 'press': return `press("${action.key}")`;
     case 'navigate': return `navigate("${action.url}")`;
     case 'scroll': return `scroll("${action.direction}"${action.amount ? `, ${action.amount}` : ''})`;
-    case 'wait': return action.selector ? `wait("${action.selector}")` : `wait(${action.ms ?? action.timeout ?? 1000}ms)`;
+    case 'wait': return action.text ? `wait(text "${shorten(action.text, 40)}")` : action.gone ? `wait(gone "${shorten(action.gone, 40)}")` : action.url ? `wait(url ${shorten(action.url, 50)})` : action.load ? `wait(${action.load})` : action.selector ? `wait("${action.selector}")` : `wait(${action.ms ?? action.timeout ?? 1000}ms)`;
     case 'done': return `done(${action.success ? 'success' : 'failed'}: "${shorten(action.reason)}")`;
   }
 }

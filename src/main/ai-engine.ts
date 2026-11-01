@@ -244,7 +244,7 @@ Never generate JavaScript, CSS selectors unless using the fill tool selector fie
 - press: { "action": "press", "key": string } presses Enter, Tab, Escape, ArrowDown, etc.
 - navigate: { "action": "navigate", "url": string } navigates directly to a URL.
 - scroll: { "action": "scroll", "direction": "up"|"down"|"top"|"bottom", "amount"?: number }
-- wait: { "action": "wait", "ms": number } or { "action": "wait", "selector": string, "timeout": number }
+- wait: { "action": "wait", "ms": number } — or wait for a CONDITION (ends as soon as it is true, max "timeout" ms, default 15000, max 60000): { "action": "wait", "text": "Results" } (text appears on the page), { "action": "wait", "gone": "Loading" } (text disappears), { "action": "wait", "url": "/checkout" } (URL contains it; "**/orders/*" globs work), { "action": "wait", "load": "networkidle" } (no network activity; "load" = page finished loading). Prefer a condition over a fixed sleep after search/submit buttons.
 - done: { "action": "done", "reason": string, "success": boolean } ends the task.
 
 You receive the current observed state on every step in this compact format:

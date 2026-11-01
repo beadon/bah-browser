@@ -97,6 +97,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getFramesCoords: (wcId: number, key: string, ids: number[]) => ipcRenderer.invoke('cdp:frames-coords', wcId, key, ids),
   frameClick: (wcId: number, key: string, id: number) => ipcRenderer.invoke('cdp:frame-click', wcId, key, id),
   frameFill: (wcId: number, key: string, id: number, value: string) => ipcRenderer.invoke('cdp:frame-fill', wcId, key, id, value),
+  waitNetworkIdle: (wcId: number, idleMs: number, timeoutMs: number) => ipcRenderer.invoke('cdp:wait-network-idle', wcId, idleMs, timeoutMs),
   selectAll: (wcId: number) => ipcRenderer.invoke('input:select-all', wcId),
   realKey: (wcId: number, key: string) =>
     ipcRenderer.invoke('input:key', wcId, key),
