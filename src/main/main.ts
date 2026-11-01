@@ -998,6 +998,14 @@ function createWindow(): void {
     wc.on('audio-state-changed', (e) => {
       mainWindow?.webContents.send('tab-audio', { wcId: wc.id, audible: e.audible });
     });
+    // Diagnóstico (BAH_DEBUG_IDENTITY=1): registra no agent.log o que a página vê da identidade.
+    if (process.env.BAH_DEBUG_IDENTITY === '1') {
+      wc.on('dom-ready', () => {
+        wc.executeJavaScript(`JSON.stringify({ url: location.href, webdriver: navigator.webdriver, ua: navigator.userAgent, brands: navigator.userAgentData && navigator.userAgentData.brands.map(function (b) { return b.brand + ' ' + b.version; }).join(', '), langs: navigator.languages })`)
+          .then((v) => { try { fs.appendFileSync(path.join(app.getPath('userData'), 'agent.log'), `${new Date().toISOString()} [Identity] ${v}\n`); } catch {} })
+          .catch(() => {});
+      });
+    }
     // Inject stealth script before each navigation to mask Electron/automation signals
     wc.on('dom-ready', () => {
       if (!/accounts\.google\.com|accounts-google\.com/i.test(wc.getURL())) {
@@ -3085,8 +3093,8 @@ function stopYtSkipPolling(wcId: number) {
 const STEALTH_SCRIPT = `
 (function(){
   try {
-    // 1. navigator.webdriver — must be undefined (not false)
-    Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => undefined, configurable: true });
+    // 1. navigator.webdriver: NÃO mexer — numa execução normal o motor já diz false, igual ao Chrome.
+    //    (O remendo antigo trocava pra undefined depois do load: valor que nenhum Chrome real tem.)
 
     // 2. navigator.plugins — populate with realistic Chrome plugins
     Object.defineProperty(navigator, 'plugins', {
