@@ -1876,6 +1876,10 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
     return true;
   });
   ipcMain.handle('ai:action', async (_event, command: string, pageContent?: string, screenshot?: VisionImage, tier?: 'local' | 'flash' | 'pro', actionId?: string) => {
+    // Diagnóstico (dev): BAH_DUMP_PROMPTS=<pasta> grava cada pedido ao modelo (o que o agente viu) num arquivo.
+    if (process.env.BAH_DUMP_PROMPTS) {
+      try { fs.mkdirSync(process.env.BAH_DUMP_PROMPTS, { recursive: true }); fs.writeFileSync(path.join(process.env.BAH_DUMP_PROMPTS, `prompt-${Date.now()}.txt`), `${command}\n<<<PAGE>>>\n${pageContent ?? ''}`); } catch {}
+    }
     if (process.env.E2E_MOCK_AI === '1') {
       // E2E_MOCK_SCRIPT = JSON array of actions: returned one per step (then done), and every
       // prompt is kept in global.__e2ePrompts so a test can assert what the agent was shown.

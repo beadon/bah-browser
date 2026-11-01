@@ -6,6 +6,7 @@
 // Front matter (subconjunto de YAML: `chave: valor` e `chave: [a, b]`):
 //   name, description, sites (hosts; casa subdomínio), states, tasks, priority (maior primeiro)
 // Uma skill casa quando TODAS as listas que ela declara casam (lista vazia = não restringe).
+// Ordem: site > tarefa > estado — a receita do que a pessoa PEDIU vem antes da genérica da tela.
 
 export interface Skill {
   name: string;
@@ -70,7 +71,7 @@ export function selectSkills(skills: Skill[], ctx: SkillContext, max = 3): Skill
     if (s.sites.length && !siteHit) continue;
     if (s.states.length && !stateHits) continue;
     if (s.tasks.length && !taskHit) continue;
-    scored.push({ s, score: (siteHit ? 4 : 0) + stateHits * 2 + (taskHit ? 1 : 0) + s.priority / 100 });
+    scored.push({ s, score: (siteHit ? 6 : 0) + stateHits * 2 + (taskHit ? 3 : 0) + s.priority / 100 });
   }
   return scored.sort((a, b) => b.score - a.score).slice(0, max).map(x => x.s);
 }

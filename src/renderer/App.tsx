@@ -2523,10 +2523,13 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                 recentRunsRef.current.set(taskTabId, tabRuns);
                 // Run com passos de página bem-sucedidos = receita reaproveitável.
                 // (Replays não regravam: a receita original é a fonte da verdade.)
-                if (status === 'success' && !repeatIntent && (history.match(/\nSTEP \d+:/g) || []).length >= 3) {
+                // "report" encerra como sucesso mesmo quando o texto diz que não deu ("Unable to locate…"):
+                // isso não é receita pra guardar.
+                const reportsFailure = /\b(unable|could ?n[o']t|cannot|can't|failed to|not able to|não consegui|não foi possível|no pude)\b/i.test(reason);
+                if (status === 'success' && !reportsFailure && !repeatIntent && (history.match(/\nSTEP \d+:/g) || []).length >= 3) {
                   void offerSkillSave(command, history, onProgress);
                 }
-                if (status === 'success' && !repeatIntent && macroTraceRef.current.length > 0) {
+                if (status === 'success' && !reportsFailure && !repeatIntent && macroTraceRef.current.length > 0) {
                   saveLastMacro({ command, steps: [...macroTraceRef.current], savedAt: Date.now() });
                   onProgress({ kind: 'status', message: `🧠 Sequence recorded (${macroTraceRef.current.length} step(s)). Say "repeat" or "repeat 100 times" to re-run it without spending AI.` });
                 }
@@ -3618,12 +3621,12 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     // Pedido de BUSCA (pessoas, produtos, hotéis, resultados) encerrado com uma frase vaga
                     // ("os resultados estão visíveis") — uma vez, pede a lista do que está na página.
                     // Só leitura: não exige carregar outra página (vale também em site cuidadoso).
-                    if (vagueFinishBlocks < 1 && (commandIsPeople || commandWantsSearch || commandIsShopping || commandIsTravel) && !commandWantsDownload) {
+                    if (vagueFinishBlocks < 1 && (commandIsPeople || commandWantsSearch || commandIsShopping || commandIsTravel || commandIsJobs) && !commandWantsDownload) {
                       const r = String(action.reason || '');
                       const hasList = /\n\s*(?:[-*•]|\d+[.)])\s|\|/.test(r) || (r.match(/\d/g) || []).length >= 3 || r.length > 260;
                       if (!hasList) {
                         vagueFinishBlocks++;
-                        history += `\nSUMMARIZE FIRST: the user wants the actual results, not "they are visible". List what this page shows (people: name, title, company, location; products/hotels: name, price, rating), mark the best matches and why. Use extract_text on THIS page if you have not — do not load another page. Then finish with done (or render_view for a table).`;
+                        history += `\nSUMMARIZE FIRST: the user wants the actual results, not "they are visible". List what this page shows (people: name, title, company, location; jobs: title, company, location, pay; products/hotels: name, price, rating), mark the best matches and why. Use extract_text on THIS page if you have not — do not load another page. Then finish with done (or render_view for a table).`;
                         onProgress({ kind: 'status', message: '📝 Asking for the actual results before finishing.' });
                         continue;
                       }
