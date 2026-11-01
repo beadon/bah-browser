@@ -33,6 +33,7 @@ export type AgentAction =
   | { type: 'look_at'; ref?: number; x?: number; y?: number; w?: number; h?: number }
   | { type: 'find'; text: string }
   | { type: 'web_search'; query: string }
+  | { type: 'history_search'; query: string }
   | { type: 'back' }
   | { type: 'check' | 'uncheck'; ref: number }
   | { type: 'fill_ref'; ref: number; value: string }
@@ -66,6 +67,7 @@ const BATCHABLE_ACTIONS = new Set(['fill_ref', 'fill', 'type', 'press', 'click_r
 
 const VALID_ACTIONS = new Set([
   'plan',
+  'history_search',
   'web_search',
   'look_at',
   'find',
@@ -345,6 +347,8 @@ export class PageAgent {
         return { type: 'click_ref', ref: toRef(action.ref) };
       case 'look_at':
         return { type: 'look_at', ref: action.ref != null && action.ref !== '' ? toRef(action.ref) : undefined, x: toOptionalNumber(action.x), y: toOptionalNumber(action.y), w: toOptionalNumber(action.w ?? action.width), h: toOptionalNumber(action.h ?? action.height) };
+      case 'history_search':
+        return { type: 'history_search', query: String(action.query ?? action.q ?? action.text ?? '').trim() };
       case 'web_search':
         return { type: 'web_search', query: String(action.query ?? action.q ?? action.text ?? '').trim() };
       case 'find':
@@ -441,6 +445,7 @@ export function validateAction(a: AgentAction): string | null {
       if (a.ref != null) return finiteInt(a.ref) ? null : `look_at "ref" must be a non-negative integer, got ${JSON.stringify((a as any).ref)}`;
       return [a.x, a.y, a.w, a.h].every(v => typeof v === 'number' && Number.isFinite(v) && v >= 0) && (a.w as number) > 0 && (a.h as number) > 0
         ? null : 'look_at needs "ref", or "x","y","w","h" (viewport pixels) for the area to zoom into';
+    case 'history_search': return nonEmpty(a.query) ? null : 'history_search needs a non-empty "query"';
     case 'web_search': return nonEmpty(a.query) ? null : 'web_search needs a non-empty "query"';
     case 'find': return nonEmpty(a.text) ? null : 'find needs the "text" to look for';
     case 'back': return null;

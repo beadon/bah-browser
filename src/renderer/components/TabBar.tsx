@@ -22,7 +22,7 @@ export default function TabBar({ tabs, activeTabId, onSelect, onClose, onNew }: 
             title={tab.discarded ? t('tab.sleeping') : undefined}
           >
             {tab.discarded ? <span className="tab-sleep">💤</span> : tab.isLoading ? <span className="tab-spinner" /> : <TabFavicon url={tab.url} />}
-            <span className="tab-title">{tab.title || t('tab.new')}</span>
+            <span className="tab-title">{tab.agentTask ? '🤖 ' : ''}{tab.title || t('tab.new')}</span>
             {tab.audible && <TabAudioIcon />}
             <button
               className="tab-close"

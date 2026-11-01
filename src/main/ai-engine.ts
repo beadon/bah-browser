@@ -194,7 +194,8 @@ Rules for "actions":
 
 Never generate JavaScript, CSS selectors unless using the fill tool selector field, or invented function names. The browser will execute only these action types:
 - switch_tab: { "action": "switch_tab", "tab": number } — focus another open tab by its number from the TABS list.
-- new_tab: { "action": "new_tab", "url": string } — open a new tab on the given URL.
+- new_tab: { "action": "new_tab", "url": string } — open a new tab on the given URL. MULTI-SITE tasks: open each new site with new_tab (one tab per site) so earlier results stay open and the user's starting tab is not navigated away.
+- TABS marks each tab: (agent tab) = opened by you, use freely; (starting tab) = the tab the task began in; (your tab) = the USER's other tab — switching to it asks the user first, and close_tab only works on agent tabs.
 - close_tab: { "action": "close_tab", "tab": number } — close a tab by its number.
 - plan: { "action": "plan", "steps": string[] } — EMIT FIRST on complex/multi-step tasks. List the steps you'll take.
 - store: { "action": "store", "key": string, "value": any, "source"?: string } — save extracted data into agent MEMORY.
@@ -218,6 +219,7 @@ Never generate JavaScript, CSS selectors unless using the fill tool selector fie
 - find_file: { "action": "find_file", "query": string, "filetype"?: string } — finds DIRECT download links to a specific file type using Google's filetype: operator. For "ache um PDF sobre X", "um manual em PDF de Y", "uma planilha de Z": call find_file { "query": "X", "filetype": "pdf" } (or xlsx, docx, pptx, mp3...). Results land in history as "FILES FOUND" with [fileN] URLs — then use download to save the chosen one. Default filetype is pdf.
 - read_aloud: { "action": "read_aloud", "text"?: string } — reads text ALOUD with the computer's voice (text-to-speech, pt-BR). With no "text" it reads the current page's main content. Use for "leia isso pra mim", "leia a notícia em voz alta".
 - report: { "action": "report", "summary": string } — FINAL action. Delivers your synthesized answer/summary to the user and ends the task.
+- history_search: { "action": "history_search", "query": "..." } — finds pages the USER visited before in this browser (title + URL), e.g. "the laptop page I looked at yesterday". Asks the user's permission (or follows their saved choice). Then navigate/new_tab to the link.
 - web_search: { "action": "web_search", "query": "..." } — searches the web WITHOUT leaving the page: Bah tries several search engines (skipping any that block this connection) and returns the top results (title, URL, snippet) as text. Then navigate to the best result. Prefer this over opening a search engine page.
 - look_at: { "action": "look_at", "ref": number } or { "action": "look_at", "x": n, "y": n, "w": n, "h": n } — ZOOM: the NEXT screenshot is a sharp, full-resolution crop of that element's area (or that viewport rectangle) instead of the whole shrunken page. Use it when text/buttons in the screenshot are too small to read (download tables, OS/version lists, form fields). One step only; while zoomed, act with refs (click_ref/select_option), not click_at.
 - find: { "action": "find", "text": "Agree to the EULA" } — searches the WHOLE page (including off-screen parts and items missing from INTERACTIVE ELEMENTS) for controls/labels containing that text, scrolls the best match into view so it appears in the element list next step, and reports the other matches. Use it when the button/link you need is not in the list.

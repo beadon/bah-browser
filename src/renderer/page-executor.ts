@@ -30,6 +30,7 @@ export type BrowserAction =
   | { type: 'look_at'; ref?: number; x?: number; y?: number; w?: number; h?: number }
   | { type: 'find'; text: string }
   | { type: 'web_search'; query: string }
+  | { type: 'history_search'; query: string }
   | { type: 'back' }
   | { type: 'check' | 'uncheck'; ref: number }
   | { type: 'fill_ref'; ref: number; value: string }
@@ -109,6 +110,7 @@ export function formatAction(action: BrowserAction): string {
     case 'close_tab': return `close_tab(${action.tab})`;
     case 'click_ref': return `click_ref(@${action.ref})`;
     case 'look_at': return action.ref != null ? `look_at(@${action.ref})` : `look_at(${action.x},${action.y} ${action.w}x${action.h})`;
+    case 'history_search': return `history_search("${shorten(action.query, 60)}")`;
     case 'web_search': return `web_search("${shorten(action.query, 60)}")`;
     case 'find': return `find("${shorten(action.text, 50)}")`;
     case 'back': return 'back()';

@@ -27,7 +27,7 @@ export interface StepRecord {
 export type AgentProgressEvent =
   | { kind: 'status'; message: string }
   | { kind: 'manual_help'; message: string; instruction: string; onContinue: () => void }
-  | { kind: 'confirm'; message: string; label: string; risk: string; onConfirm: () => void; onCancel: () => void; title?: string; yesLabel?: string; noLabel?: string }
+  | { kind: 'confirm'; message: string; label: string; risk: string; onConfirm: () => void; onCancel: () => void; title?: string; yesLabel?: string; noLabel?: string; choices?: Array<{ label: string; value: string }>; onChoose?: (value: string) => void }
   | { kind: 'plan_preview'; goal: string; steps: string[]; autoRunMs?: number; onApprove: () => void; onEdit: (goal: string) => void; onCancel: () => void; onHold?: () => void }
   | { kind: 'thought'; message: string }
   | { kind: 'action'; action: BrowserAction }
@@ -54,7 +54,7 @@ type FeedData =
   | { kind: 'report'; text: string }
   | { kind: 'error'; text: string }
   | { kind: 'help'; message: string; instruction: string }
-  | { kind: 'confirm'; message: string; title?: string; yesLabel?: string; noLabel?: string };
+  | { kind: 'confirm'; message: string; title?: string; yesLabel?: string; noLabel?: string; choices?: Array<{ label: string; value: string }> };
 type FeedItem = FeedData & { id: number };
 
 const FEED_CAP = 400;
@@ -545,7 +545,7 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
   const [startMsg, setStartMsg] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const manualContinueRef = useRef<(() => void) | null>(null);
-  const confirmActionsRef = useRef<{ onConfirm: () => void; onCancel: () => void } | null>(null);
+  const confirmActionsRef = useRef<{ onConfirm: () => void; onCancel: () => void; onChoose?: (value: string) => void } | null>(null);
   const planCbRef = useRef<{ approve: () => void; edit: (goal: string) => void; cancel: () => void; hold?: () => void } | null>(null);
   // Quando o cartão do plano se executa sozinho (App.tsx); null = contagem parada.
   const [planAutoAt, setPlanAutoAt] = useState<number | null>(null);
@@ -688,10 +688,10 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
           setPlanDraft(event.goal);
           setPlanEditing(false);
         } else if (event.kind === 'confirm') {
-          confirmActionsRef.current = { onConfirm: event.onConfirm, onCancel: event.onCancel };
+          confirmActionsRef.current = { onConfirm: event.onConfirm, onCancel: event.onCancel, onChoose: event.onChoose };
           setPendingConfirm({ message: event.message });
-          confirmLabelsRef.current = !!event.yesLabel;
-          push({ kind: 'confirm', message: event.message, title: event.title, yesLabel: event.yesLabel, noLabel: event.noLabel });
+          confirmLabelsRef.current = !!event.yesLabel || !!event.choices;
+          push({ kind: 'confirm', message: event.message, title: event.title, yesLabel: event.yesLabel, noLabel: event.noLabel, choices: event.choices });
         } else if (event.kind === 'result') {
           // skip — step cards already carry action+result (avoids duplicate noise)
         } else if (event.kind === 'media') {
@@ -1170,6 +1170,14 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
     if (!confirmLabelsRef.current) push({ kind: 'event', event: { kind: 'status', message: ok ? '✅ You confirmed — continuing.' : '✖️ You canceled the action.' } });
     confirmLabelsRef.current = false;
     if (actions) (ok ? actions.onConfirm : actions.onCancel)();
+  };
+  // Pergunta com várias opções (ex.: permissão: só nesta tarefa / sempre / negar / nunca).
+  const handleChoice = (value: string) => {
+    const actions = confirmActionsRef.current;
+    confirmActionsRef.current = null;
+    setPendingConfirm(null);
+    confirmLabelsRef.current = false;
+    actions?.onChoose?.(value);
   };
 
   const handleContinueAfterManualHelp = () => {
@@ -1798,7 +1806,7 @@ export default function AgentCommandBar({ onExecute, onSendChat, onResearch, onC
           </div>
         )}
         {feed.map(item => {
-          const row = <FeedRow item={item} onContinue={handleContinueAfterManualHelp} helpActive={!!manualHelp} onConfirmRisky={handleConfirmRisky} confirmActive={!!pendingConfirm} onRunSuggestion={(cmd) => { pendingSuggestionRef.current = null; if (!loading && !chatLoading && !busyRef.current) runAgent(cmd); }} onOpenUrl={onOpenUrl} onSwitchToCloud={onSwitchToCloud} onToggleSpeak={toggleSpeak} speakingId={speakingId} />;
+          const row = <FeedRow item={item} onContinue={handleContinueAfterManualHelp} helpActive={!!manualHelp} onConfirmRisky={handleConfirmRisky} onChoose={handleChoice} confirmActive={!!pendingConfirm} onRunSuggestion={(cmd) => { pendingSuggestionRef.current = null; if (!loading && !chatLoading && !busyRef.current) runAgent(cmd); }} onOpenUrl={onOpenUrl} onSwitchToCloud={onSwitchToCloud} onToggleSpeak={toggleSpeak} speakingId={speakingId} />;
           const transient = item.kind === 'event' && item.event.kind === 'status';
           const cls = !transient ? 'feed-pass' : (expiringIds.has(item.id) ? 'feed-out' : undefined);
           return <div key={item.id} className={cls}>{row}</div>;
@@ -2123,7 +2131,7 @@ function notifyDone(message: string) {
   } catch {}
 }
 
-function FeedRow({ item, onContinue, helpActive, onConfirmRisky, confirmActive, onRunSuggestion, onOpenUrl, onSwitchToCloud, onToggleSpeak, speakingId }: { item: FeedItem; onContinue: () => void; helpActive: boolean; onConfirmRisky: (ok: boolean) => void; confirmActive: boolean; onRunSuggestion: (cmd: string) => void; onOpenUrl: (url: string) => void; onSwitchToCloud: () => void; onToggleSpeak: (id: number, text: string) => void; speakingId: number | null }) {
+function FeedRow({ item, onContinue, helpActive, onConfirmRisky, onChoose, confirmActive, onRunSuggestion, onOpenUrl, onSwitchToCloud, onToggleSpeak, speakingId }: { item: FeedItem; onContinue: () => void; helpActive: boolean; onConfirmRisky: (ok: boolean) => void; onChoose: (value: string) => void; confirmActive: boolean; onRunSuggestion: (cmd: string) => void; onOpenUrl: (url: string) => void; onSwitchToCloud: () => void; onToggleSpeak: (id: number, text: string) => void; speakingId: number | null }) {
   switch (item.kind) {
     case 'task':
       return <div className="chat-msg user"><div className="msg-content">⚡ {item.text}</div></div>;
@@ -2222,8 +2230,12 @@ function FeedRow({ item, onContinue, helpActive, onConfirmRisky, confirmActive, 
           <div className="feed-confirm-msg" style={{ whiteSpace: 'pre-wrap' }}>{item.message}</div>
           {confirmActive && (
             <div className="feed-confirm-actions">
-              <button className="confirm-yes" onClick={() => onConfirmRisky(true)}>{item.yesLabel || t('feed.confirmYes')}</button>
-              <button className="confirm-no" onClick={() => onConfirmRisky(false)}>{item.noLabel || t('feed.confirmNo')}</button>
+              {item.choices?.length
+                ? item.choices.map((c, i) => <button key={c.value} className={i < 2 ? 'confirm-yes' : 'confirm-no'} onClick={() => onChoose(c.value)}>{c.label}</button>)
+                : <>
+                    <button className="confirm-yes" onClick={() => onConfirmRisky(true)}>{item.yesLabel || t('feed.confirmYes')}</button>
+                    <button className="confirm-no" onClick={() => onConfirmRisky(false)}>{item.noLabel || t('feed.confirmNo')}</button>
+                  </>}
             </div>
           )}
         </div>

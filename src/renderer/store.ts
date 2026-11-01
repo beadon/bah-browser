@@ -15,6 +15,7 @@ export interface Tab {
   discarded?: boolean;    // Memory Saver: webview unmounted (RAM freed); reloads on activation
   lastActiveAt?: number;  // when the tab was last the active one (drives the discard sweep)
   audible?: boolean;      // sound is coming out of this tab (drives the speaker icon, Chrome-style)
+  agentTask?: boolean;    // opened by the running agent task (🤖 in the tab bar until the task ends)
 }
 
 export interface ChatMessage {

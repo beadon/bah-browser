@@ -1,4 +1,5 @@
 import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { getPerm, setPerm, nextMode, applyAnswer, type PermKind, type PermMode, type PermAnswer } from './agent-permissions';
 import { isCarefulHost, CAREFUL_ALLOWED } from './careful-sites';
 import { namesStore } from './stores';
 import { paceDelay, recordHit, backoff, isBackedOff, hostOf, BOT_CHECK_RE } from './pacing';
@@ -506,6 +507,7 @@ export default function App() {
     }
     store.closeTab(id);
   }, [store]);
+  const [, setPermTick] = useState(0);   // re-render ao trocar uma permissão do agente no menu
   // Buscador preferido (pesquisa, barra de endereço e agente). 'auto' = Google primeiro.
   const [searchEngine, setSearchEngineState] = useState<EngineId | 'auto'>(() => preferredEngine());
   const cycleSearchEngine = useCallback(() => {
@@ -1420,6 +1422,13 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   <span className="menu-label">{t('menu.memSaver')}</span>
                   <span className={`menu-switch ${memSaverOn ? 'on' : ''}`}>{memSaverOn ? 'ON' : 'OFF'}</span>
                 </button>
+                {(['userTabs', 'history'] as PermKind[]).map(k => (
+                  <button key={k} className="menu-item" onClick={() => { setPerm(k, nextMode(getPerm(k))); setPermTick(x => x + 1); }} title={t('menu.agentPermTitle')}>
+                    <span className="menu-ic">{k === 'userTabs' ? '🗂️' : '🕘'}</span>
+                    <span className="menu-label">{t(k === 'userTabs' ? 'menu.agentPermTabs' : 'menu.agentPermHistory')}</span>
+                    <span className={`menu-switch ${getPerm(k) === 'allow' ? 'on' : ''}`}>{t(`menu.perm.${getPerm(k)}` as any)}</span>
+                  </button>
+                ))}
                 <button className="menu-item" onClick={() => { setMenuOpen(false); window.electronAPI?.skillsOpenFolder?.(); }} title={t('menu.mySkillsTitle')}>
                   <span className="menu-ic">🧩</span>
                   <span className="menu-label">{t('menu.mySkills')}</span>
@@ -1823,7 +1832,28 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               // Download que começou NESTA tarefa (não um que terminou depois, vindo da anterior).
               const ofThisTask = (d: any) => !!d && (d.startedAt ?? 0) >= taskStartedAt;
               let shortDownloadBlocks = 0;
-              let vagueFinishBlocks = 0;   // pedido de busca encerrado sem listar o que achou   // done barrado porque um download desta tarefa termina logo
+              let vagueFinishBlocks = 0;   // pedido de busca encerrado sem listar o que achou
+              // Abas desta tarefa: a de partida + as que o agente abriu. Abas da PESSOA e o histórico
+              // passam pela permissão (perguntar / sempre / nunca — menu ou resposta na pergunta).
+              const agentOpenedTabs = new Set<string>();
+              const grantedTabs = new Set<string>([taskTabId]);
+              const askPermission = async (kind: PermKind, what: string): Promise<boolean> => {
+                const mode = getPerm(kind);
+                if (mode === 'allow') return true;
+                if (mode === 'deny') return false;
+                const label = kind === 'userTabs' ? 'one of your tabs' : 'your browsing history';
+                const answer = await new Promise<PermAnswer>((resolve) => {
+                  onProgress({ kind: 'confirm', risk: 'permission', label, title: `🔐 The agent wants to use ${label}`,
+                    message: `${what}\nYou can change this later in the menu.`,
+                    choices: [
+                      { label: '✅ Allow for this task', value: 'once' }, { label: '✅ Always allow', value: 'always' },
+                      { label: 'Deny', value: 'deny' }, { label: '🚫 Always deny', value: 'never' },
+                    ],
+                    onChoose: (v: string) => resolve(v as PermAnswer), onConfirm: () => resolve('once'), onCancel: () => resolve('deny') } as any);
+                });
+                throwIfCancelled();
+                return applyAnswer(kind, answer);
+              };   // done barrado porque um download desta tarefa termina logo
               let localHelpPauses = 0;   // a dead local model pauses for help, it does not kill the run
               let lastActionSummary = '';  // what the previous step did
               let lastActionOutcome = '';  // what the page looked like after it
@@ -2380,7 +2410,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     }).join('\n');
                   prevElementKeys = curElementKeys;
                   const tabsList = tabsRef.current
-                    .map((t, i) => `[${i}]${t.id === activeTabIdRef.current ? ' (active)' : ''} "${(t.title || 'Untitled').slice(0, 60)}" — ${t.url}`)
+                    .map((t, i) => `[${i}]${t.id === activeTabIdRef.current ? ' (active)' : ''}${agentOpenedTabs.has(t.id) ? ' (agent tab)' : t.id === taskTabId ? ' (starting tab)' : grantedTabs.has(t.id) ? ' (your tab — allowed)' : getPerm('userTabs') === 'deny' ? ' (your tab — no access)' : ' (your tab — ask first)'} "${(t.title || 'Untitled').slice(0, 60)}" — ${t.url}`)
                     .join('\n');
                   const planBlock = plan.length
                     ? `PLAN (${plan.length} steps):\n${plan.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`
@@ -4075,7 +4105,12 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     };
                   } else if (action.type === 'switch_tab') {
                     const target = tabsRef.current[action.tab];
-                    if (target) {
+                    const allowed = !target || grantedTabs.has(target.id) || agentOpenedTabs.has(target.id)
+                      || await askPermission('userTabs', `Switch to your tab "${(target.title || target.url).slice(0, 80)}" for this task.`);
+                    if (target && allowed) grantedTabs.add(target.id);
+                    if (target && !allowed) {
+                      toolResult = { success: false, error: `The user did not allow the agent to use their tab "${(target.title || '').slice(0, 60)}". Work in the starting tab or open a new tab.` };
+                    } else if (target) {
                       store.setActiveTabId(target.id);
                       activeTabIdRef.current = target.id;
                       toolResult = { success: true, info: { switchedTo: action.tab } };
@@ -4087,6 +4122,9 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       toolResult = { success: false, error: `Blocked: the agent only opens http(s) pages, not "${action.url}".` };
                     } else {
                     const newId = store.addTab(action.url);
+                    agentOpenedTabs.add(newId);
+                    grantedTabs.add(newId);
+                    store.updateTab(newId, { agentTask: true });
                     activeTabIdRef.current = newId;
                     toolResult = { success: true, info: { openedUrl: action.url, tabId: newId } };
                     // Wait for the new webview element to be created and attached
@@ -4100,7 +4138,9 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     }
                   } else if (action.type === 'close_tab') {
                     const target = tabsRef.current[action.tab];
-                    if (target) {
+                    if (target && !agentOpenedTabs.has(target.id)) {
+                      toolResult = { success: false, error: 'Only tabs the agent opened in this task can be closed — this one belongs to the user.' };
+                    } else if (target) {
                       // Se a aba fechada é a aba de TRABALHO do agente, o freio anti-troca-de-aba
                       // (taskRunningRef) impede o espelhamento de corrigir o ref → ele apontaria pra
                       // aba MORTA e o passo seguinte quebraria (getActiveWebview null). Então
@@ -4114,6 +4154,19 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       }
                       toolResult = { success: true, info: { closed: action.tab } };
                     } else toolResult = { success: false, error: `Tab ${action.tab} not found` };
+                  } else if (action.type === 'history_search') {
+                    if (!(await askPermission('history', `Search your browsing history for "${action.query.slice(0, 80)}".`))) {
+                      toolResult = { success: false, error: 'The user did not allow the agent to read their browsing history.' };
+                    } else {
+                      const words = action.query.toLowerCase().split(/\s+/).filter(Boolean);
+                      const hits = historyRef.current
+                        .map(h => ({ h, score: words.filter(w => `${h.title} ${h.url}`.toLowerCase().includes(w)).length }))
+                        .filter(x => x.score > 0).sort((a, b) => b.score - a.score || b.h.ts - a.h.ts).slice(0, 10).map(x => x.h);
+                      history += hits.length
+                        ? `\nHISTORY MATCHES for "${action.query}" (pages the user visited, newest first among equals):\n${hits.map((h, i) => `  ${i + 1}. ${h.title || '(no title)'} — ${h.url} (${new Date(h.ts).toLocaleDateString()})`).join('\n')}`
+                        : `\nHISTORY: no visited page matches "${action.query}".`;
+                      toolResult = { success: true, info: { matches: hits.length } };
+                    }
                   } else if (action.type === 'web_search') {
                     // Busca por texto em vários buscadores (pula os bloqueados) — o agente recebe a lista
                     // e decide qual link abrir, sem cair na página de captcha do buscador.
@@ -4358,7 +4411,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   // Internal actions (plan/store/extract_text) never change the page — skip the
                   // settle + re-observe machinery (10-20s on heavy pages) and reuse the current state.
                   const pageNeutralAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'web_search'
+                    || action.type === 'look_at' || action.type === 'web_search' || action.type === 'history_search'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud';
@@ -4422,7 +4475,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   });
                   // Internal-state actions (plan/store/extract) don't change the page — don't penalize them
                   const internalAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search'
+                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search' || action.type === 'history_search'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud' || action.type === 'wait';
@@ -4656,6 +4709,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                 // agente volta a seguir a aba que o usuário está vendo agora.
                 taskRunningRef.current = false;
                 taskEndedAtRef.current = Date.now();
+                for (const t of tabsRef.current) if (t.agentTask) store.updateTab(t.id, { agentTask: false });
                 // O que chegou depois do último passo (a IA já tinha decidido terminar) fica na
                 // fila: a barra pega e roda como o próximo pedido — mensagem nunca some.
                 interjectRef.current = { running: false, queue: interjectRef.current.queue, abortStep: null };
