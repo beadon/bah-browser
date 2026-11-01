@@ -48,6 +48,7 @@ import { setupProxy, proxyFor } from './proxy';
 import { setupSitePermissions } from './site-permissions';
 import { setupRegion, getTimezoneOverride } from './region';
 import { setupUpload, setUploadTextExtractor } from './upload';
+import { attachJsDialogs, setupJsDialogs } from './js-dialogs';
 import { loadSystemCAs, installCAs } from './system-ca';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
@@ -1004,6 +1005,7 @@ function createWindow(): void {
   // Attach context menu + popup-as-new-tab handler + UA override to webviews when they're created
   mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
     wc.setUserAgent(CHROME_UA);
+    attachJsDialogs(wc, () => mainWindow);   // alert/confirm/prompt: caixa do Bah ou política do agente (não a nativa que trava)
     // Identidade Chrome nativa (UA + client hints + userAgentData + idiomas) já na criação da aba.
     sharedEnsureDebugger(wc, wc.id).catch((e) => console.warn('[Identity] attach failed:', e?.message || e));
     // Fundo ESCURO do webview antes da página pintar — mata o "flash branco" ao abrir aba/site novo
@@ -3414,6 +3416,7 @@ app.whenReady().then(async () => {
   setupSitePermissions(() => mainWindow);
   setupRegion(applyTimezoneEverywhere, () => mainWindow);
   setupUpload(() => mainWindow, sharedEnsureDebugger);
+  setupJsDialogs();
   loadSystemCAs().then((pems) => { systemCAs = pems; const n = installCAs(pems); console.log(`[SystemCA] ${pems.length} OS certificates, ${n} added to Node`); }).catch(() => {});
   {
     const browsingSession = session.fromPartition('persist:browser');

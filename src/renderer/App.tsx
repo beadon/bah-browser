@@ -10,6 +10,8 @@ import { AppGuideBar, BeginnerTour } from './components/AppGuide';
 import { ProxySettings, ProxyAuthPrompt } from './components/ProxyPanel';
 import { SitePermissionBar, SitePermissionsPanel } from './components/SitePermissions';
 import { RegionPanel } from './components/RegionPanel';
+import { JsDialogHost } from './components/JsDialogHost';
+import { agentDialogsStart, agentDialogsStop, agentDialogsTab, armDialog, drainDialogLog } from './js-dialogs';
 import { refreshRegion, onRegionState, regionState, agentRegionLine, askedNetworkCountries } from './region-state';
 import { prefetchGpuInfo, gpuInfo, gpuIsLoaded } from './gpu-info';
 import TorrentSheet, { TorrentSheetData } from './components/TorrentSheet';
@@ -193,6 +195,9 @@ declare global {
       onSafeBrowsingBlock?: (cb: (info: { url: string; host: string }) => void) => void;
       proxyGet?: () => Promise<any>;
       regionGet?: (mode?: boolean | 'peek') => Promise<any>;
+      jsDialogRespond?: (id: number, accept: boolean, text?: string) => Promise<any>;
+      jsDialogAgentTabs?: (ids: number[]) => Promise<any>;
+      onJsDialog?: (cb: (ev: { type: 'open' | 'closed' | 'left'; data: any }) => void) => () => void;
       uploadGrantFolder?: () => Promise<{ ok: boolean; canceled?: boolean; folder?: string }>;
       uploadGrants?: () => Promise<Array<{ folder: string; path: string }>>;
       uploadRevokeAll?: () => Promise<any>;
@@ -1677,6 +1682,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
           {proxyOpen && <ProxySettings onClose={() => setProxyOpen(false)} />}
           {sitePermsOpen && <SitePermissionsPanel onClose={() => setSitePermsOpen(false)} />}
           {regionOpen && <RegionPanel onClose={() => setRegionOpen(false)} />}
+          <JsDialogHost />
           <SitePermissionBar isVisibleTab={isVisibleTab} />
           <ProxyAuthPrompt />
           {showGuide && (
@@ -1762,6 +1768,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
             onExecute={async (command, onProgress, signal, opts) => {
               const runLog = startAgentRun(command);
               const taskTabId = activeTabIdRef.current;   // aba de origem desta tarefa (não muda se o agente abrir abas)
+              agentDialogsStart();   // alert/confirm/prompt das abas do agente seguem a política dele (js-dialogs.ts)
               taskRunningRef.current = true;   // a partir daqui, trocas MANUAIS de aba não mexem na aba do agente
               interjectRef.current = { running: true, queue: [], abortStep: null };
               // Suspende o bypass do adblock enquanto o agente trabalha: senão ele lê os
@@ -2636,6 +2643,8 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     : '';
                   { const eng = engineForUrl(observation.url);
                     if (eng && SEARCH_BLOCK_RE.test(`${observation.url} ${observation.title} ${(observation.text_sample || '').slice(0, 1500)}`)) markBlocked(eng); }
+                  agentDialogsTab((wv as any).getWebContentsId?.());
+                  history += drainDialogLog();
                   const observedPayload = [
                     buildKnownSitesBlock(observation),
                     '',
@@ -4357,6 +4366,12 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       }
                       toolResult = { success: true, info: { closed: action.tab } };
                     } else toolResult = { success: false, error: `Tab ${action.tab} not found` };
+                  } else if (action.type === 'dialog') {
+                    // Arma a resposta do PRÓXIMO alert/confirm/prompt desta aba (vale 60 s).
+                    const wcIdDlg = (wv as any).getWebContentsId?.();
+                    agentDialogsTab(wcIdDlg);
+                    if (wcIdDlg != null) armDialog(wcIdDlg, action.accept, action.text);
+                    toolResult = { success: true, info: { armed: action.accept ? `accept${action.text != null ? ` with "${action.text}"` : ''}` : 'dismiss', note: 'Now do the action that opens the dialog.' } };
                   } else if (action.type === 'suggest_time_zone') {
                     // O agente só SUGERE; quem muda o fuso dos sites é a pessoa (cartão de confirmação).
                     const cur = regionState();
@@ -4725,7 +4740,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   // Internal actions (plan/store/extract_text) never change the page — skip the
                   // settle + re-observe machinery (10-20s on heavy pages) and reuse the current state.
                   const pageNeutralAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file'
+                    || action.type === 'look_at' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud';
@@ -4789,7 +4804,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   });
                   // Internal-state actions (plan/store/extract) don't change the page — don't penalize them
                   const internalAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file'
+                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud' || action.type === 'wait';
@@ -5022,6 +5037,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                 // tarefa acabou (sucesso, erro OU cancelamento): solta o freio e a aba do
                 // agente volta a seguir a aba que o usuário está vendo agora.
                 taskRunningRef.current = false;
+                agentDialogsStop();
                 taskEndedAtRef.current = Date.now();
                 for (const t of tabsRef.current) if (t.agentTask) store.updateTab(t.id, { agentTask: false });
                 // O que chegou depois do último passo (a IA já tinha decidido terminar) fica na

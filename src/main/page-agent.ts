@@ -33,6 +33,7 @@ export type AgentAction =
   | { type: 'select_option'; ref: number; option: string }
   | { type: 'upload'; ref: number; multiple?: boolean; file?: string[] }
   | { type: 'list_files'; query?: string }
+  | { type: 'dialog'; accept: boolean; text?: string }
   | { type: 'read_file'; file: string }
   | { type: 'look_at'; ref?: number; x?: number; y?: number; w?: number; h?: number }
   | { type: 'find'; text: string }
@@ -92,6 +93,7 @@ const VALID_ACTIONS = new Set([
   'select_option',
   'upload',
   'list_files',
+  'dialog',
   'read_file',
   'list_downloads',
   'cancel_download',
@@ -387,6 +389,11 @@ export class PageAgent {
         { const f = action.file ?? action.files ?? action.path;
           const files = (Array.isArray(f) ? f : f != null && f !== '' ? [f] : []).map((x: any) => String(x).trim()).filter(Boolean).slice(0, 10);
           return { type: 'upload', ref: toRef(action.ref), multiple: !!action.multiple || files.length > 1, ...(files.length ? { file: files } : {}) }; }
+      case 'dialog': {
+        const acc = action.accept ?? action.value ?? (typeof action.answer === 'string' ? !/^(dismiss|cancel|no|false)$/i.test(action.answer) : true);
+        const text = action.text ?? action.prompt_text ?? action.promptText;
+        return { type: 'dialog', accept: acc === true || acc === 'true' || acc === 'accept', ...(text != null ? { text: String(text) } : {}) };
+      }
       case 'list_files':
         return { type: 'list_files', query: String(action.query ?? action.q ?? '').trim() || undefined };
       case 'read_file':
@@ -491,6 +498,7 @@ export function validateAction(a: AgentAction): string | null {
     case 'check': case 'uncheck':
       return finiteInt(a.ref) ? null : `${a.type} needs a finite non-negative integer "ref", got ${JSON.stringify((a as any).ref)}`;
     case 'list_files': return null;
+    case 'dialog': return null;
     case 'read_file': return nonEmpty(a.file) ? null : 'read_file needs a "file" name from list_files';
     case 'upload':
       return finiteInt(a.ref) ? null : `upload needs the "ref" of the upload button or file field, got ${JSON.stringify((a as any).ref)}`;

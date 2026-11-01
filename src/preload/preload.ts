@@ -113,6 +113,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('proxy:auth-request', listener);
     return () => ipcRenderer.removeListener('proxy:auth-request', listener);
   },
+  jsDialogRespond: (id: number, accept: boolean, text?: string) => ipcRenderer.invoke('jsdialog:respond', id, accept, text),
+  jsDialogAgentTabs: (ids: number[]) => ipcRenderer.invoke('jsdialog:agent-tabs', ids),
+  onJsDialog: (cb: (ev: { type: 'open' | 'closed' | 'left'; data: any }) => void) => {
+    const o = (_e: any, d: any) => cb({ type: 'open', data: d }); const c = (_e: any, d: any) => cb({ type: 'closed', data: d }); const l = (_e: any, d: any) => cb({ type: 'left', data: d });
+    ipcRenderer.on('jsdialog:open', o); ipcRenderer.on('jsdialog:closed', c); ipcRenderer.on('jsdialog:left', l);
+    return () => { ipcRenderer.removeListener('jsdialog:open', o); ipcRenderer.removeListener('jsdialog:closed', c); ipcRenderer.removeListener('jsdialog:left', l); };
+  },
   uploadGrantFolder: () => ipcRenderer.invoke('upload:grant-folder'),
   uploadGrants: () => ipcRenderer.invoke('upload:grants'),
   uploadRevokeAll: () => ipcRenderer.invoke('upload:revoke-all'),

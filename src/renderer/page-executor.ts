@@ -29,6 +29,7 @@ export type BrowserAction =
   | { type: 'select_option'; ref: number; option: string }
   | { type: 'upload'; ref: number; multiple?: boolean; file?: string[] }
   | { type: 'list_files'; query?: string }
+  | { type: 'dialog'; accept: boolean; text?: string }
   | { type: 'read_file'; file: string }
   | { type: 'look_at'; ref?: number; x?: number; y?: number; w?: number; h?: number }
   | { type: 'find'; text: string }
@@ -120,6 +121,7 @@ export function formatAction(action: BrowserAction): string {
     case 'history_search': return `history_search("${shorten(action.query, 60)}")`;
     case 'upload': return `upload(@${action.ref}${action.file ? ` ${([] as string[]).concat(action.file).join(', ')}` : ''})`;
     case 'list_files': return 'list_files()';
+    case 'dialog': return `dialog(${action.accept ? 'accept' : 'dismiss'}${action.text != null ? ` "${shorten(action.text, 40)}"` : ''})`;
     case 'read_file': return `read_file(${shorten(action.file, 60)})`;
     case 'suggest_time_zone': return `suggest_time_zone(${action.zone})`;
     case 'web_search': return `web_search("${shorten(action.query, 60)}")`;

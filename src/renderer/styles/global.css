@@ -2279,3 +2279,9 @@ body {
   background:transparent; color:var(--accent); font:inherit; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;
 }
 .tz-chip:hover{ background:rgba(255,255,255,0.06); }
+
+/* alert/confirm/prompt das páginas */
+.jsdialog{ z-index:125; }
+.jsdialog-msg{ font-size:13.5px; color:var(--text-primary); white-space:pre-wrap; word-break:break-word; max-height:50vh; overflow:auto; line-height:1.45; }
+.jsdialog-input{ height:32px; padding:0 10px; border-radius:8px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); font:inherit; font-size:13px; }
+.jsdialog .tour-btn:not(.tour-btn-primary){ background:rgba(255,255,255,0.08); color:var(--text-primary); }
