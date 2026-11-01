@@ -61,6 +61,7 @@ de DOM sintéticos), então os sites reagem exatamente como reagiriam pra uma pe
 | `js-dialogs.ts` (+ `src/renderer/js-dialogs.ts`, `components/JsDialogHost.tsx`) | `alert`/`confirm` das páginas: troca a caixa nativa do Electron (que trava a página; evento interno `-run-dialog`) pela caixa do Bah pra pessoa, e pela política do agente nas abas dele (`dialog` armado > alert fecha > confirm comum aceito > confirm de pagamento/exclusão pergunta à pessoa); `beforeunload` nas abas do agente sai quando ele navega. `prompt()` não existe no Electron (lança erro) |
 | `upload.ts` | `upload` do agente (diálogo do SO → token; campo por nó/label/posição, ou o seletor do SO interceptado com `Page.setInterceptFileChooserDialog` durante a ação; `DOM.setFileInputFiles`) e pastas liberadas na sessão pra `list_files` / `read_file` / `upload { file }` (conferidas por realpath) |
 | `region.ts` (+ `src/shared/region.ts`, `src/renderer/region-state.ts`) | 🌍 Região e hora: país de saída da rede (trace da Cloudflare, só no Automático, cache de 10 min), região de compras, fuso dos sites via CDP `Emulation.setTimezoneOverride` (volta ao reiniciar, salvo se mantido); linha de região do agente, `gl=`/`cc=` na busca, cartão `suggest_time_zone` |
+| `proxy-base.ts` | Ponte entre o proxy do Bah e o `chrome.proxy` das extensões (VPN de extensão): extensão no controle vence (como no Chrome); quando solta, as abas voltam pro proxy configurado no Bah, não um "sistema" fixo; a política de WebRTC do Bah é a base das extensões |
 | `system-ca.ts` | Lê o repositório de certificados-raiz do SO e soma às CAs padrão do Node (`tls.setDefaultCACertificates`) — processo principal e worker de download — pra proxies corporativos com inspeção TLS |
 | `video-cuts.ts`, `transcript.ts` | Recursos de vídeo locais (localizar onde uma frase é dita, transcrições) — ffmpeg nativo |
 | `image-harvester.ts` | Colheita de imagens em massa + geração de imagem por IA (Pollinations), com limites |
@@ -224,6 +225,8 @@ Tipos de tarefa: `download`, `search`, `travel`, `shopping`, `parts`.
 ---
 
 ## Build e release
+
+> **E2E no macOS:** abra o Electron com `--use-mock-keychain`. Sem isso o cofre de senhas (`safeStorage`) abre um pedido do Chaveiro pro build de dev sem assinatura num perfil novo de teste, e a chamada síncrona trava o processo principal (o Playwright só estoura o tempo, sem erro).
 
 - **Build:** Renderer = Vite + typecheck `tsc`; Main = `tsc`. Um gate de paridade de i18n
   (`scripts/i18n-check.mjs`) **falha o build** se en/pt/es saírem de sincronia.

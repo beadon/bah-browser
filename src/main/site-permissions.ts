@@ -1,93 +1,135 @@
-// Permissões de site no motor: localização, câmera, microfone, leitura da área de transferência,
-// notificações, MIDI, arquivos. Começa negado; a pessoa decide na barra do Bah ("só desta vez",
-// "sempre", "nunca"), lembrado por origem em <userData>/site-permissions.json. O agente nunca responde.
-// A janela do próprio Bah (sessão padrão) tem o handler dela no main.ts (microfone do recurso de voz).
-import { app, ipcMain, session, type BrowserWindow, type Session, type WebContents } from 'electron';
-import * as fs from 'fs';
-import * as path from 'path';
-import { classifyPermission, decide, originOf, type PermKind, type Stored } from '../shared/site-permissions';
+// Permissões dos sites nas abas (câmera, microfone, localização, notificações…), igual ao
+// Chrome: o site PEDE, o Bah pergunta pra pessoa e lembra a resposta daquele site.
+//
+// Antes não havia regra nenhuma na sessão das abas (persist:browser) — e sem regra o
+// Electron libera TUDO sozinho. Num teste, uma página pegou o microfone, a localização e as
+// notificações sem pergunta nenhuma.
+//
+// As regras (o que libera, o que pergunta, o que a resposta guardada vale) ficam em
+// site-permission-rules.ts, puras e testadas; aqui só liga elas no Electron e na tela.
+//
+// Aba anônima (privateSessions): pergunta TODA vez e nunca guarda a resposta (nem no arquivo, nem
+// na memória). Dos guardados, só os "Bloquear" do perfil normal valem lá (igual ao Chrome).
+import { app, ipcMain, type BrowserWindow, type Session, type WebContents } from 'electron';
+import fs from 'fs';
+import path from 'path';
+import {
+  resolveRequest, checkAnswer, storedDecision, originOf, sanitizeStore, policyFor, incognitoStore, PERM_KINDS,
+  type Decision, type PermKind, type PermStore,
+} from './site-permission-rules';
 
-const file = () => path.join(app.getPath('userData'), 'site-permissions.json');
-let store: Record<string, Stored> = {};
-const load = () => { try { store = JSON.parse(fs.readFileSync(file(), 'utf8')) || {}; } catch { store = {}; } };
-const save = () => { try { fs.writeFileSync(file(), JSON.stringify(store, null, 2)); } catch {} };
-
-// "Só desta vez": vale até a página navegar/fechar (por webContents + origem).
-const once = new Map<string, Set<PermKind>>();
-const onceKey = (wcId: number, origin: string) => `${wcId}|${origin}`;
-
-type Pending = { wcId: number; origin: string; kinds: PermKind[]; done: (ok: boolean) => void };
-const pending = new Map<number, Pending>();
-let seq = 0;
-const watched = new Set<number>();
-
-function watch(wc: WebContents) {
-  if (watched.has(wc.id)) return;
-  watched.add(wc.id);
-  const wcId = wc.id;
-  const drop = () => {
-    for (const k of [...once.keys()]) if (k.startsWith(`${wcId}|`)) once.delete(k);
-    for (const [id, p] of pending) if (p.wcId === wcId) { p.done(false); pending.delete(id); }
-  };
-  wc.on('did-navigate', drop);
-  wc.once('destroyed', () => { drop(); watched.delete(wcId); });
+interface Pending {
+  id: string; wcId: number; origin: string; kinds: PermKind[]; external?: string;
+  callbacks: Array<(ok: boolean) => void>; detach: () => void;
+  priv: boolean;   // pergunta de aba anônima: a resposta vale só desta vez
 }
 
-export function setupSitePermissions(getMainWindow: () => BrowserWindow | null): void {
-  load();
-  const notify = () => getMainWindow()?.webContents.send('siteperm:changed');
+export function setupSitePermissions(deps: { getMainWindow: () => BrowserWindow | null; sessions: Session[]; privateSessions?: Session[] }) {
+  const file = path.join(app.getPath('userData'), 'site-permissions.json');
+  let store: PermStore = {};
+  try { store = sanitizeStore(JSON.parse(fs.readFileSync(file, 'utf8'))); } catch {}
+  // Grava num arquivo ao lado e troca: se o PC desligar no meio, o arquivo antigo fica inteiro.
+  const save = () => {
+    try { fs.writeFileSync(file + '.tmp', JSON.stringify(store, null, 1)); fs.renameSync(file + '.tmp', file); } catch {}
+  };
 
-  const attach = (s: Session) => {
-    s.setPermissionCheckHandler((wc, permission, requestingOrigin, details: any) => {
-      const c = classifyPermission(permission, details?.mediaType ? [details.mediaType] : undefined);
-      if (c.decision !== 'ask') return c.decision === 'allow';
-      const origin = originOf(requestingOrigin) || originOf(details?.requestingUrl || '');
-      return decide(store[origin], c.kinds, wc ? once.get(onceKey(wc.id, origin)) : undefined) === 'allow';
+  const pending = new Map<string, Pending>();
+  let seq = 0;
+  // O que cada tipo de aba enxerga do que está guardado (a anônima, só os bloqueios).
+  const viewOf = (priv: boolean): PermStore => (priv ? incognitoStore(store) : store);
+  const send = (channel: string, payload: unknown) => {
+    try { deps.getMainWindow()?.webContents.send(channel, payload); } catch {}
+  };
+  const finish = (p: Pending, ok: boolean) => {
+    p.detach();
+    pending.delete(p.id);
+    for (const cb of p.callbacks) { try { cb(ok); } catch {} }
+  };
+  const cancel = (p: Pending, ok = false) => { finish(p, ok); send('site-permission:cancel', p.id); };
+
+  // Uma resposta guardada (pela pergunta ou pelo cadeado) também responde as outras perguntas
+  // abertas daquele site — outra aba, ou câmera e microfone pedidos separados.
+  const settleOpen = (origin: string) => {
+    for (const p of [...pending.values()]) {
+      if (p.origin !== origin || p.kinds.includes('openExternal')) continue;
+      const saved = storedDecision(viewOf(p.priv), origin, p.kinds);   // anônima: um "Permitir" daqui não vale lá
+      if (saved) cancel(p, saved === 'allow');
+    }
+  };
+
+  const ask = (wc: WebContents, origin: string, kinds: PermKind[], external: string | undefined, cb: (ok: boolean) => void, priv: boolean) => {
+    // Mesma aba + mesmo site + mesma coisa (e mesmo aplicativo) já perguntando: espera a mesma resposta.
+    for (const p of pending.values()) {
+      if (p.wcId === wc.id && p.origin === origin && p.kinds.join() === kinds.join() && p.external === external) {
+        p.callbacks.push(cb); return;
+      }
+    }
+    const id = `perm_${++seq}`;
+    // Sem prazo (igual ao Chrome: a pergunta espera a pessoa voltar pra aba). Só cai se a aba
+    // fechar ou ABRIR outra página — 'did-navigate' é a troca que aconteceu de fato; link
+    // bloqueado, download ou "abrir aplicativo" não derrubam a pergunta.
+    const drop = () => { const p = pending.get(id); if (p) cancel(p); };
+    wc.on('destroyed', drop);
+    wc.on('did-navigate', drop);
+    const detach = () => {
+      try { wc.removeListener('destroyed', drop); wc.removeListener('did-navigate', drop); } catch {}
+    };
+    pending.set(id, { id, wcId: wc.id, origin, kinds, external, callbacks: [cb], detach, priv });
+    send('site-permission:ask', { id, wcId: wc.id, origin, kinds, external, ...(priv ? { incognito: true } : {}) });
+  };
+
+  const bind = (ses: Session, priv: boolean) => {
+    ses.setPermissionRequestHandler((wc, permission, callback, details: any) => {
+      const r = resolveRequest(viewOf(priv), permission, details || {}, wc.getURL());
+      if (r.action !== 'ask') return callback(r.action === 'allow');
+      ask(wc, r.origin, r.kinds, r.external, callback, priv);
     });
-    s.setPermissionRequestHandler((wc, permission, callback, details: any) => {
-      const c = classifyPermission(permission, details?.mediaTypes);
-      if (c.decision !== 'ask') return callback(c.decision === 'allow');
-      const origin = originOf(details?.requestingUrl || wc.getURL());
-      const d = decide(store[origin], c.kinds, once.get(onceKey(wc.id, origin)));
-      if (d !== 'ask') return callback(d === 'allow');
-      const win = getMainWindow();
-      if (!origin || !win) return callback(false);
-      watch(wc);
-      const id = ++seq;
-      let settled = false;
-      const done = (ok: boolean) => { if (!settled) { settled = true; callback(ok); } };
-      pending.set(id, { wcId: wc.id, origin, kinds: c.kinds, done });
-      setTimeout(() => { if (pending.has(id)) { pending.delete(id); done(false); win.webContents.send('siteperm:cancel', id); } }, 5 * 60_000);
-      win.webContents.send('siteperm:request', { id, wcId: wc.id, origin, kinds: c.kinds });
+    // A checagem usa o mesmo "site da aba" do pedido (embeddingOrigin = a página de cima).
+    ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details: any) => {
+      const origin = originOf(details?.embeddingOrigin) || originOf(wc?.getURL()) || originOf(requestingOrigin);
+      if (!origin) return policyFor(permission) !== 'ask';   // página que não é site (nova aba, arquivo)
+      return checkAnswer(viewOf(priv), origin, permission, details?.mediaType);
     });
   };
-  attach(session.fromPartition('persist:browser'));
-  // Outras sessões de sites (janelas de login etc.). A da janela do Bah fica com o handler do main.ts.
-  app.on('session-created', (s) => { if (s !== session.defaultSession) attach(s); });
+  for (const ses of deps.sessions) bind(ses, false);
+  for (const ses of deps.privateSessions || []) bind(ses, true);
 
-  // Resposta da barra. 'auto-deny' = aba oculta/em segundo plano/do agente: nega sem perguntar.
-  ipcMain.handle('siteperm:respond', (_e, id: number, choice: 'once' | 'always' | 'never' | 'dismiss' | 'auto-deny') => {
-    const p = pending.get(id);
+  // A tela respondeu: 'allow'/'block' ficam guardados pro site; 'dismiss' (Agora não) nega só
+  // agora. "Abrir aplicativo" nunca fica guardado — cada link pergunta de novo. Aba anônima também
+  // não: a resposta vale só pra este pedido (nada do site visitado vai pro arquivo).
+  ipcMain.handle('site-permission:answer', (_e, id: string, answer: 'allow' | 'block' | 'dismiss') => {
+    const p = pending.get(String(id));
     if (!p) return { ok: false };
-    pending.delete(id);
-    if (choice === 'always' || choice === 'never') {
-      const cur = store[p.origin] || (store[p.origin] = {});
-      for (const k of p.kinds) cur[k] = choice === 'always' ? 'allow' : 'block';
-      save(); notify();
-    } else if (choice === 'once') {
-      const key = onceKey(p.wcId, p.origin);
-      const s = once.get(key) || new Set<PermKind>();
-      p.kinds.forEach(k => s.add(k)); once.set(key, s);
+    const remember = !p.priv && (answer === 'allow' || answer === 'block') && !p.kinds.includes('openExternal');
+    if (remember) {
+      const site = store[p.origin] || (store[p.origin] = {});
+      for (const k of p.kinds) site[k] = answer as Decision;
+      save();
     }
-    p.done(choice === 'once' || choice === 'always');
+    finish(p, answer === 'allow');
+    if (remember) settleOpen(p.origin);
     return { ok: true };
   });
-  ipcMain.handle('siteperm:list', () => store);
-  ipcMain.handle('siteperm:reset', (_e, origin: string, kind?: PermKind) => {
-    if (!store[origin]) return { ok: true };
-    if (kind) delete store[origin][kind]; else delete store[origin];
-    if (store[origin] && !Object.keys(store[origin]).length) delete store[origin];
-    save(); notify();
+  // Cadeado da barra de endereço: o que este site tem guardado, mudar uma escolha, "redefinir".
+  ipcMain.handle('site-permission:list', (_e, url: string) => {
+    const origin = originOf(url);
+    return { origin, perms: (origin && store[origin]) || {} };
+  });
+  // Escolha feita no cadeado: 'allow'/'block' guarda; null volta a "Perguntar".
+  ipcMain.handle('site-permission:set', (_e, url: string, kind: string, value: Decision | null) => {
+    const origin = originOf(url);
+    if (!origin || !PERM_KINDS.includes(kind as PermKind)) return { ok: false };
+    const site = store[origin] || (store[origin] = {});
+    if (value === 'allow' || value === 'block') site[kind as PermKind] = value;
+    else delete site[kind as PermKind];
+    if (Object.keys(site).length === 0) delete store[origin];
+    save();
+    settleOpen(origin);
+    return { ok: true, perms: store[origin] || {} };
+  });
+  ipcMain.handle('site-permission:reset', (_e, url: string) => {
+    const origin = originOf(url);
+    if (origin && store[origin]) { delete store[origin]; save(); }
     return { ok: true };
   });
 }

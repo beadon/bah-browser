@@ -12,6 +12,8 @@ const ROOT = path.resolve(__dirname, '../..');
 const ELECTRON = process.platform === 'win32' ? path.join(ROOT, 'node_modules/electron/dist/electron.exe')
   : process.platform === 'darwin' ? path.join(ROOT, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron')
   : path.join(ROOT, 'node_modules/electron/dist/electron');
+// --use-mock-keychain: no macOS o cofre de senhas (safeStorage) abre um pedido do Chaveiro que trava o main
+// num perfil novo de teste; o chaveiro falso do Chromium evita o pedido.
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 test('time zone for sites: panel, chip, agent suggestion, reset on restart', async () => {
@@ -26,7 +28,7 @@ test('time zone for sites: panel, chip, agent suggestion, reset on restart', asy
     { type: 'done', reason: 'Suggested Tokyo time.', success: true },
   ];
   const { ELECTRON_RUN_AS_NODE: _n, ...env } = process.env;
-  const launch = () => electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${tmp}`], env: { ...env, E2E_MOCK_AI: '1', E2E_MOCK_SCRIPT: JSON.stringify(script), NODE_ENV: 'test' } });
+  const launch = () => electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${tmp}`, '--use-mock-keychain'], env: { ...env, E2E_MOCK_AI: '1', E2E_MOCK_SCRIPT: JSON.stringify(script), NODE_ENV: 'test' } });
   let app = await launch();
   try {
     let page = await app.firstWindow(); await page.waitForLoadState('domcontentloaded'); await sleep(1500);
@@ -36,7 +38,7 @@ test('time zone for sites: panel, chip, agent suggestion, reset on restart', asy
     const pageTz = () => app.evaluate(({ webContents }) => webContents.getAllWebContents().filter(w => w.getType() === 'webview').pop()!
       .executeJavaScript('Intl.DateTimeFormat().resolvedOptions().timeZone'));
     const osTz: string = await app.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
-    const openPanel = async () => { await page.locator('.menu-btn').last().click(); await page.locator('.menu-item', { hasText: 'Region & time' }).click(); };
+    const openPanel = async () => { await page.locator('.menu-btn[title="Menu"]').click(); await page.locator('.menu-item', { hasText: 'Region & time' }).click(); };
 
     await go(T + '/');
     expect(await pageTz()).toBe(osTz);

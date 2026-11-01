@@ -9,6 +9,7 @@ import * as path from 'path';
 
 import { configFromEnv, toElectronProxy, type ProxyConfig } from './proxy-config';
 import { invalidateNetworkCountry } from './region';
+import { setBaseNetwork, extensionControlsProxy, extensionControlsRtc } from './proxy-base';
 export type { ProxyConfig } from './proxy-config';
 
 const cfgPath = () => path.join(app.getPath('userData'), 'proxy.json');
@@ -26,16 +27,18 @@ const knownSessions = new Set<Session>();
 let current: ProxyConfig = { mode: 'system' };
 
 async function applyTo(s: Session): Promise<void> {
+  if (extensionControlsProxy(s)) return;   // VPN de extensão no controle desta sessão (ela vence, como no Chrome)
   try { await s.setProxy(toElectronProxy(current) as Electron.ProxyConfig); await s.closeAllConnections?.(); } catch (e: any) { console.warn('[Proxy] setProxy failed:', e?.message || e); }
 }
 
 // WebRTC fala UDP direto e ignora o proxy → o IP real vaza (STUN). Com proxy ativo, só UDP pelo
 // proxy (na prática: TURN/TCP). Sem proxy fica o padrão do Chrome, pra não piorar chamadas de vídeo.
 let rtcPolicy: 'default' | 'disable_non_proxied_udp' = 'default';
-const setRtc = (wc: WebContents) => { try { if (!wc.isDestroyed()) wc.setWebRTCIPHandlingPolicy(rtcPolicy); } catch {} };
+const setRtc = (wc: WebContents) => { try { if (!wc.isDestroyed() && !extensionControlsRtc(wc.session)) wc.setWebRTCIPHandlingPolicy(rtcPolicy); } catch {} };
 async function refreshRtcPolicy(): Promise<void> {
   const via = current.mode === 'direct' ? 'DIRECT' : await proxyFor('https://www.example.com/');
   rtcPolicy = via.startsWith('DIRECT') ? 'default' : 'disable_non_proxied_udp';
+  setBaseNetwork(toElectronProxy(current) as Electron.ProxyConfig, rtcPolicy);
   webContents.getAllWebContents().forEach(setRtc);
 }
 

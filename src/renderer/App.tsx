@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useEffect, useState } from 'react';
+import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { getPerm, setPerm, nextMode, applyAnswer, type PermKind, type PermMode, type PermAnswer } from './agent-permissions';
 import { isCarefulHost, CAREFUL_ALLOWED } from './careful-sites';
 import { namesStore } from './stores';
@@ -8,7 +8,6 @@ import { selectSkills, formatSkillsBlock, validateSkill, SKILL_STATES, SKILL_TAS
 import AgentVisualOverlay, { AgentVisualState, ClickRipple } from './components/AgentVisualOverlay';
 import { AppGuideBar, BeginnerTour } from './components/AppGuide';
 import { ProxySettings, ProxyAuthPrompt } from './components/ProxyPanel';
-import { SitePermissionBar, SitePermissionsPanel } from './components/SitePermissions';
 import { RegionPanel } from './components/RegionPanel';
 import { JsDialogHost } from './components/JsDialogHost';
 import { matchRole } from '../shared/role-target';
@@ -17,7 +16,9 @@ import { refreshRegion, onRegionState, regionState, agentRegionLine, askedNetwor
 import { prefetchGpuInfo, gpuInfo, gpuIsLoaded } from './gpu-info';
 import TorrentSheet, { TorrentSheetData } from './components/TorrentSheet';
 import { useTabStore } from './store';
-import TabBar from './components/TabBar';
+import TabBar, { type TabCommand } from './components/TabBar';
+import { useSiteMute } from './site-mute';
+import { closeOthersIds, closeRightIds, nextActiveAfterClose } from '../shared/tab-strip';
 import AddressBar from './components/AddressBar';
 import AgentCommandBar, { AgentProgressEvent } from './components/AgentCommandBar';
 import HwMonitor from './components/HwMonitor';
@@ -26,7 +27,24 @@ import { stripTrackingParams } from '../main/tracking-params';
 import { speak, stopSpeaking, isSpeaking } from './tts';
 import { t, onLangChange, getLang, googleLocaleParams, bingLocale, uiLangName } from './i18n';
 import WebViewContainer from './components/WebViewContainer';
+import PermissionPrompt, { type SitePermAsk } from './components/PermissionPrompt';
+import PasswordSavePrompt from './components/PasswordSavePrompt';
+import PasswordSuggest from './components/PasswordSuggest';
+import PasswordsPanel from './components/PasswordsPanel';
+import type { PasswordsBridge, PwOffer, PwSuggest } from '../shared/password-types';
 import MonitorsPanel from './components/MonitorsPanel';
+import ClearDataDialog, { type ClearChoice } from './components/ClearDataDialog';
+import { keepDownloads, originsVisited, rangeSince, splitHistory, type TimeRange } from '../shared/clear-data';
+import ExtensionsToolbar, { type ExtensionInfo } from './components/ExtensionsToolbar';
+import SearchEngineMenu from './components/SearchEngineMenu';
+import StartupMenu from './components/StartupMenu';
+import DefaultBrowserMenu from './components/DefaultBrowserMenu';
+import { searchUrlFor, isNewTabPage, onSearchEngineChange, syncSearchEngineToMain } from './search-engine';
+import BookmarksBar from './components/BookmarksBar';
+import SiteIcon from './components/SiteIcon';
+import IncognitoPage from './components/IncognitoPage';
+import { canDiscard, isIncognitoBlank, mayRecord, opensIncognito } from '../shared/incognito';
+import { incognitoReady, setAiIncognitoProbe } from './incognito';
 import {
   BrowserAction,
   executeBrowserAction,
@@ -84,6 +102,19 @@ import {
 } from './agent-run-logger';
 import { createDeadline } from './task-deadline';
 import { classifySelfEval, nextSelfFailCount } from '../shared/self-eval';
+import { mergeFavorites, MAX_FAVORITES, type FlatBookmark } from '../shared/bookmarks';
+
+// Quantos favoritos desenhar na barra e no menu ⋮ (a lista inteira continua no autocomplete).
+// Barra: os primeiros 100 (o que não cabe na largura vai pro "»"). ⋮ → Favoritos: os primeiros 150.
+const FAV_BAR_MAX = 100;
+const FAV_MENU_MAX = 150;
+// Atalho do "Imprimir…" como o sistema escreve (dica do item no menu ⋮).
+const BOOKMARK_KEY = /Mac/i.test(typeof navigator !== 'undefined' ? navigator.platform || '' : '') ? '⌘D' : 'Ctrl+D';
+const PRINT_KEY = /Mac/i.test(typeof navigator !== 'undefined' ? navigator.platform || '' : '') ? '⌘P' : 'Ctrl+P';
+// Atalho da "Nova aba anônima" (o da janela anônima do Chrome).
+const INCOGNITO_KEY = /Mac/i.test(typeof navigator !== 'undefined' ? navigator.platform || '' : '') ? '⇧⌘N' : 'Ctrl+Shift+N';
+// Atalho do Limpar dados de navegação, como no Chrome (no Mac a tecla "delete" é o Backspace).
+const CLEAR_DATA_KEY = /Mac/i.test(typeof navigator !== 'undefined' ? navigator.platform || '' : '') ? '⇧⌘⌫' : 'Ctrl+Shift+Delete';
 
 declare global {
   interface Window {
@@ -96,6 +127,7 @@ declare global {
       encryptSecret?: (t: string) => Promise<string>;
       decryptSecretSync?: (t: string) => string;
       setUILanguage?: (lang: string) => Promise<any>;
+      setSearchEngine?: (setting: { id: string; custom?: string }, googleLocale: string) => void;
       onZoom?: (cb: (pct: number) => void) => void;
       setLocalProvider?: (provider: string, apiKey: string, baseUrl?: string, modelName?: string, opts?: { contextMode?: 'auto' | 'custom'; contextTokens?: number; maxOutputTokens?: number; ollamaNumCtx?: 'auto' | number; vision?: boolean; visionMode?: VisionMode }) => Promise<any>;
       localDiscover?: (provider: string, baseUrl?: string, authKey?: string) => Promise<{ ok: boolean; models: Array<{ id: string; loaded?: boolean; vision: string; contextTokens?: number; contextSource?: string; unsuitable?: string }>; error?: string }>;
@@ -110,6 +142,10 @@ declare global {
       onChatDelta?: (cb: (p: { streamId: string; delta: string }) => void) => () => void;
       onActionDelta?: (cb: (m: { kind: 'thinking' | 'answer'; estTokens: number; tokPerSec: number; elapsedMs: number; exact: boolean }) => void) => () => void;
       clearChatHistory?: (tabId?: string) => Promise<any>;
+      // Continuar de onde parou: o main pede pra gravar as abas antes de fechar a janela; a tela
+      // pede pra mandar o localStorage pro disco já quando a sessão muda (renderer/session.ts).
+      onSaveSessionNow?: (cb: () => void) => (() => void);
+      flushUiStorage?: () => void;
       aiAction: (command: string, pageContent?: string, screenshot?: VisionImage, tier?: 'local' | 'flash' | 'pro', actionId?: string) => Promise<{
         action?: any; actions?: any[]; thought?: string; error?: string;
         /** Machine-readable failure (shared/error-codes.ts) — the renderer decides on this. */
@@ -117,8 +153,31 @@ declare global {
         [k: string]: any;
       }>;
       actionCancel?: (actionId: string) => Promise<any>;
-      onOpenNewTab?: (cb: (url: string) => void) => void;
+      onOpenNewTab?: (cb: (url: string, opts?: { incognito?: boolean }) => void) => void;
+      onOutsideOpen?: (cb: (p: { url: string; noScript: boolean; launch: boolean }) => void) => (() => void);
+      outsideOpenReady?: () => void;
+      defaultBrowserStatus?: () => Promise<{ platform: 'win32' | 'darwin' | 'other'; packaged: boolean; isDefault: boolean }>;
+      defaultBrowserMake?: () => Promise<{ ok: true; alreadyDefault?: boolean; openedSettings?: boolean } | { ok: false; error: string }>;
+      incognitoWipe?: () => Promise<boolean>;
+      setPrivateAi?: (on: boolean) => void;
       onTabAudio?: (cb: (p: { wcId: number; audible: boolean }) => void) => (() => void);
+      onSitePermissionAsk?: (cb: (p: SitePermAsk) => void) => (() => void);
+      onSitePermissionCancel?: (cb: (id: string) => void) => (() => void);
+      answerSitePermission?: (id: string, answer: 'allow' | 'block' | 'dismiss') => Promise<any>;
+      listSitePermissions?: (url: string) => Promise<{ origin: string; perms: Record<string, 'allow' | 'block'> }>;
+      setSitePermission?: (url: string, kind: string, value: 'allow' | 'block' | null) => Promise<{ ok: boolean; perms?: Record<string, 'allow' | 'block'> }>;
+      resetSitePermissions?: (url: string) => Promise<any>;
+      passwords?: PasswordsBridge;
+      getExtensionsState?: () => Promise<ExtensionInfo[]>;
+      onExtensionsState?: (cb: (list: ExtensionInfo[]) => void) => (() => void);
+      onExtensionOpenTab?: (cb: (p: { reqId: number; url: string; active: boolean }) => void) => (() => void);
+      extensionTabOpened?: (reqId: number, wcId: number) => Promise<boolean>;
+      onExtensionCloseTab?: (cb: (p: { wcId: number }) => void) => (() => void);
+      extensionActionClick?: (extId: string, wcId: number | null, anchor: { left: number; top: number; right: number; bottom: number }) => Promise<{ ok: boolean; popup?: boolean; disabled?: boolean }>;
+      removeExtension?: (extId: string) => Promise<{ ok: boolean; error?: string }>;
+      setExtensionEnabled?: (extId: string, enabled: boolean) => Promise<{ ok: boolean; error?: string; quiet?: boolean }>;
+      openExtensionStore?: () => Promise<{ ok: boolean }>;
+      openExtensionOptions?: (extId: string) => Promise<{ ok: boolean }>;
       torrentAdd?: (uri: string) => Promise<{ ok: boolean; id?: string; name?: string; files?: Array<{ index: number; name: string; length: number }>; error?: string }>;
       torrentPlay?: (id: string, index: number) => Promise<{ ok: boolean; url?: string; error?: string }>;
       torrentSaveFile?: (id: string, index: number) => Promise<{ ok: boolean; dest?: string; blocked?: boolean }>;
@@ -197,6 +256,15 @@ declare global {
       onShortcut?: (cb: (action: string) => void) => (() => void) | void;
       dismissOverlays?: (wcId: number) => Promise<{ dismissed: string }>;
       pickDocument?: () => Promise<{ ok: boolean; name?: string; text?: string; error?: string } | null>;
+      bookmarksSources?: () => Promise<Array<{ id: 'chrome' | 'edge'; name: string }>>;
+      bookmarksImportBrowser?: (id: string) => Promise<{ ok: true; items: FlatBookmark[]; profile?: string } | { ok: false; error: string }>;
+      bookmarksImportHtml?: () => Promise<{ ok: true; items: FlatBookmark[] } | { ok: false; error: string }>;
+      bookmarksExport?: (favs: FlatBookmark[]) => Promise<{ ok: true; count: number; file: string } | { ok: false; error: string }>;
+      faviconsGet?: (origins: string[], peek?: boolean) => Promise<Record<string, string | null>>;
+      onFaviconsUpdated?: (cb: (batch: Record<string, string | null>) => void) => () => void;
+      printPage?: (wcId: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+      savePagePdf?: (wcId: number) => Promise<{ ok: true; file?: string; path?: string; downloaded?: boolean } | { ok: false; error: string }>;
+      clearBrowsingData?: (req: { range: TimeRange; cookies: boolean; cache: boolean; origins: string[] }) => Promise<{ ok: true } | { ok: false; error: string }>;
       getPathForFile?: (file: File) => string;
       stockMovers?: (direction: string, count?: number) => Promise<{ success: boolean; spec?: any; error?: string }>;
       onVideoProgress?: (cb: (p: { state: string; percent?: number; title?: string; path?: string; error?: string; speed?: string; eta?: string }) => void) => void;
@@ -222,10 +290,6 @@ declare global {
       uploadSet?: (wcId: number, backendNodeId: number | null, token: string, at?: { x: number; y: number }) => Promise<{ ok: boolean; names?: string[]; accept?: string; dropped?: number; error?: string }>;
       regionSet?: (r: any) => Promise<any>;
       onRegionChanged?: (cb: () => void) => () => void;
-      sitePermRespond?: (id: number, choice: 'once' | 'always' | 'never' | 'dismiss' | 'auto-deny') => Promise<any>;
-      sitePermList?: () => Promise<any>;
-      sitePermReset?: (origin: string, kind?: string) => Promise<any>;
-      onSitePermEvent?: (cb: (ev: any) => void) => () => void;
       proxySet?: (c: any) => Promise<any>;
       proxyTest?: (url?: string) => Promise<any>;
       proxyForgetPasswords?: () => Promise<any>;
@@ -253,7 +317,11 @@ function localOptsForMain(ls: { contextMode?: 'auto' | 'custom'; contextTokens?:
 
 export default function App() {
   const store = useTabStore();
+  // A aba que a pessoa está vendo é anônima (selo na barra, extensões e "Entrar…" apagados).
+  const activeIncognito = !!store.activeTab?.incognito;
   const webviewRefs = useRef<Map<string, Electron.WebviewTag>>(new Map());
+  // "Desativar som do site" (menu da aba): mudo em todas as abas do site, salvo entre sessões.
+  const siteMute = useSiteMute(store.tabs, webviewRefs);
   const [agentVisual, setAgentVisual] = useState<AgentVisualState>('idle');
   // Live tokens/sec from the engine, shown while the agent works.
   const [liveMetrics, setLiveMetrics] = useState<{ kind: 'thinking' | 'answer'; estTokens: number; tokPerSec: number; elapsedMs: number; exact: boolean } | null>(null);
@@ -298,6 +366,53 @@ export default function App() {
   // num ref pra switch_tab/close_tab/contexto do modelo lerem o estado atual, não o velho.
   const tabsRef = useRef(store.tabs);
   useEffect(() => { tabsRef.current = store.tabs; }, [store.tabs]);
+
+  // ── Aba anônima (regras em shared/incognito.ts) ──
+  // A aba que a pessoa está vendo é anônima? (o que ela abre dali — favorito em aba nova — também é)
+  const userOnIncognito = useCallback(() => !!tabsRef.current.find(t => t.id === userTabRef.current)?.incognito, []);
+  // A IA está trabalhando numa aba anônima? (a tarefa começou numa, ou a aba de trabalho dela é
+  // anônima) → o que ela abrir nasce anônimo e nada do que ela vê fica guardado (site-knowledge,
+  // "repetir", registro das tarefas: renderer/incognito.ts).
+  const privateTaskRef = useRef(false);
+  const aiOnIncognito = useCallback(() => privateTaskRef.current || !!tabsRef.current.find(t => t.id === activeTabIdRef.current)?.incognito, []);
+  useEffect(() => { setAiIncognitoProbe(aiOnIncognito); }, [aiOnIncognito]);
+  // Ctrl+Shift+N, ⋮ → Nova aba anônima, "Abrir link em aba anônima": espera a limpeza da sessão
+  // anônima anterior (se a última aba anônima acabou de fechar) e abre na frente. Sem endereço →
+  // a página que explica a aba anônima, com o cursor já na barra de endereço (igual ao Chrome).
+  const openIncognitoTab = useCallback(async (url?: string) => {
+    await incognitoReady();
+    store.addTab(url || '', opensIncognito('incognito'));
+    if (!url) setTimeout(() => { (document.querySelector('.url-input') as HTMLInputElement | null)?.focus(); }, 60);
+  }, [store.addTab]);
+  // Perguntas de permissão dos sites esperando resposta (cada uma presa à sua aba).
+  const [permAsks, setPermAsks] = useState<Array<SitePermAsk & { tabId: string }>>([]);
+  const answerPerm = useCallback((id: string, answer: 'allow' | 'block' | 'dismiss') => {
+    setPermAsks(prev => prev.filter(a => a.id !== id));
+    window.electronAPI?.answerSitePermission?.(id, answer);
+  }, []);
+  // Senhas salvas: o balão "Salvar senha?" (preso à aba do login) e a lista de contas em cima do
+  // campo. A senha nunca chega aqui — só site, usuário e tamanho (main/password-manager.ts).
+  const [pwOffers, setPwOffers] = useState<Array<PwOffer & { tabId: string }>>([]);
+  const [pwSuggest, setPwSuggest] = useState<(PwSuggest & { tabId: string }) | null>(null);
+  const [passwordsOpen, setPasswordsOpen] = useState<{ query?: string } | null>(null);
+  const answerPwOffer = useCallback(async (id: string, answer: 'save' | 'never' | 'dismiss', username?: string) => {
+    const r = await window.electronAPI?.passwords?.answerOffer(id, answer, username).catch(() => undefined);
+    // Gravar falhou: o balão fica (com o aviso) pra pessoa tentar de novo.
+    if (answer === 'save' && r && !r.ok && r.error === 'write-failed') return false;
+    setPwOffers(prev => prev.filter(o => o.id !== id));
+    return true;
+  }, []);
+  const revealPwOffer = useCallback(async (id: string) => {
+    const r = await window.electronAPI?.passwords?.revealOffer(id).catch(() => undefined);
+    return r && r.ok ? r.password : null;
+  }, []);
+  const closePwSuggest = useCallback(() => setPwSuggest(null), []);
+  const pickPwSuggest = useCallback((suggestId: string, entryId: string) => {
+    setPwSuggest(null);
+    void window.electronAPI?.passwords?.fill(suggestId, entryId).catch(() => {});
+  }, []);
+  // Trocou de aba: a lista era do campo da outra.
+  useEffect(() => { setPwSuggest(cur => (cur && cur.tabId !== store.activeTabId ? null : cur)); }, [store.activeTabId]);
   // Site-initiated downloads (will-download no main) — drenados pelo loop do agente
   // para a IA saber que o clique em "baixar" realmente produziu um arquivo.
   // Eventos de download que vão pra história do agente. O painel recebe todos; aqui só entram
@@ -384,7 +499,9 @@ export default function App() {
     if (!pausedCutTabsRef.current.has(id)) return;
     pausedCutTabsRef.current.delete(id);
     const wv = webviewRefs.current.get(id) as any;
-    try { wv?.setAudioMuted(false); } catch {}   // usuário abriu a aba → libera o som
+    // usuário abriu a aba → libera o som (menos se o site está com "Desativar som do site")
+    const tabUrl = store.tabs.find(x => x.id === id)?.url || '';
+    if (!siteMute.isMuted(tabUrl)) { try { wv?.setAudioMuted(false); } catch {} }
     setTimeout(() => { try { wv?.executeJavaScript(VCUT_RELEASE_JS, false); } catch {} }, 250);
   }, [store.activeTabId]);
 
@@ -436,7 +553,44 @@ export default function App() {
       window.electronAPI?.setLocalWarmup?.(!!store.localSettings.warmup);
       window.electronAPI?.setLocalProvider?.(store.localSettings.provider, store.localSettings.authKey ?? '', store.localSettings.baseUrl, store.localSettings.model, localOptsForMain(store.localSettings));
     }
-    offs.push(window.electronAPI?.onOpenNewTab?.((url: string) => store.addTab(url)) as any);
+    // opts.incognito: popup/pesquisa saída de aba anônima ou "Abrir link em aba anônima" (main).
+    offs.push(window.electronAPI?.onOpenNewTab?.((url: string, opts) => {
+      if (opts?.incognito) void openIncognitoTab(url);
+      else store.addTab(url);
+    }) as any);
+    // Link/arquivo de outro app (Bah como navegador padrão). O main segura o que chegou antes da tela
+    // montar (o link que ABRIU o Bah) e só manda depois do aviso — então o ouvinte vem antes dele.
+    offs.push(window.electronAPI?.onOutsideOpen?.((p) => { store.addOutsideTab(p.url, { launch: p.launch, noScript: p.noScript }); }));
+    window.electronAPI?.outsideOpenReady?.();
+    // Extensão pediu aba nova (chrome.tabs.create, opções, loja): na frente, ou atrás se active:false.
+    offs.push(window.electronAPI?.onExtensionOpenTab?.(({ reqId, url, active }) => {
+      const target = typeof url === 'string' && url ? url : undefined;
+      const id = active === false && target ? store.addBackgroundTab(target) : store.addTab(target);
+      // Avisa o main qual webContents é o DESTA aba (não "a próxima webview que anexar").
+      // getWebContentsId lança até a webview anexar: tenta de novo por até 5 s.
+      if (typeof reqId !== 'number') return;
+      const started = Date.now();
+      const report = () => {
+        let wcId: number | null = null;
+        try { const v = (webviewRefs.current.get(id) as any)?.getWebContentsId?.(); if (typeof v === 'number') wcId = v; } catch {}
+        if (wcId !== null) { window.electronAPI?.extensionTabOpened?.(reqId, wcId)?.catch(() => {}); return; }
+        if (Date.now() - started < 5000) setTimeout(report, 50);
+      };
+      setTimeout(report, 0);
+    }));
+    // Extensão fechou uma aba (chrome.tabs.remove): só aba que aparece na barra (a de trabalho
+    // do agente, escondida, não é da extensão).
+    offs.push(window.electronAPI?.onExtensionCloseTab?.(({ wcId }) => {
+      if (typeof wcId !== 'number') return;
+      for (const [tabId, wv] of webviewRefs.current) {
+        let id: number | null = null;
+        try { id = (wv as any).getWebContentsId?.(); } catch {}
+        if (id !== wcId) continue;
+        const tab = tabsRef.current.find(t => t.id === tabId);   // lista viva (o listener é registrado uma vez)
+        if (tab && !tab.hidden) store.closeTab(tabId);
+        return;
+      }
+    }));
     // Som na aba: o main manda o webContents que começou/parou de emitir áudio; aqui
     // achamos a aba dona dele. getWebContentsId lança se a webview ainda não anexou.
     offs.push(window.electronAPI?.onTabAudio?.(({ wcId, audible }) => {
@@ -444,6 +598,42 @@ export default function App() {
         try { if ((wv as any).getWebContentsId?.() === wcId) { store.updateTab(tabId, { audible }); return; } } catch {}
       }
     }) as any);
+    // Site pediu câmera/microfone/localização…: a pergunta fica presa à aba dona e aparece
+    // quando ela estiver na frente. Pedido de aba escondida (busca rápida, monitor) → nega.
+    offs.push(window.electronAPI?.onSitePermissionAsk?.((ask) => {
+      let owner = '';
+      for (const [tabId, wv] of webviewRefs.current) {
+        try { if ((wv as any).getWebContentsId?.() === ask.wcId) { owner = tabId; break; } } catch {}
+      }
+      const tab = tabsRef.current.find(x => x.id === owner);
+      if (!tab || tab.hidden) { window.electronAPI?.answerSitePermission?.(ask.id, 'dismiss'); return; }
+      setPermAsks(prev => [...prev, { ...ask, tabId: owner }]);
+    }) as any);
+    offs.push(window.electronAPI?.onSitePermissionCancel?.((id) => {
+      setPermAsks(prev => prev.filter(a => a.id !== id));
+    }) as any);
+    // Senhas: a aba dona pelo webContents. Aba escondida (trabalho da IA, busca rápida) nunca
+    // pergunta nem mostra a lista; a anônima o main já nem manda pergunta.
+    const pwOwner = (wcId: number) => {
+      for (const [tabId, wv] of webviewRefs.current) {
+        try { if ((wv as any).getWebContentsId?.() === wcId) return tabsRef.current.find(x => x.id === tabId); } catch {}
+      }
+      return undefined;
+    };
+    const pw = window.electronAPI?.passwords;
+    offs.push(pw?.onOffer((offer) => {
+      const tab = pwOwner(offer.wcId);
+      if (!tab || tab.hidden || tab.incognito) { void pw.answerOffer(offer.id, 'dismiss').catch(() => {}); return; }
+      // Uma pergunta por aba: a nova (outro login na mesma aba) toma o lugar.
+      setPwOffers(prev => [...prev.filter(o => o.tabId !== tab.id), { ...offer, tabId: tab.id }]);
+    }));
+    offs.push(pw?.onOfferCancel((id) => setPwOffers(prev => prev.filter(o => o.id !== id))));
+    offs.push(pw?.onSuggest((s) => {
+      const tab = pwOwner(s.wcId);
+      if (!tab || tab.hidden || tab.id !== userTabRef.current) return;
+      setPwSuggest({ ...s, tabId: tab.id });
+    }));
+    offs.push(pw?.onSuggestHide(({ wcId }) => setPwSuggest(cur => (cur && cur.wcId === wcId ? null : cur))));
     // Torrent: o main manda 'open' quando intercepta magnet/.torrent → abre o card e busca
     // a metadata; 'stats' atualiza peers/progresso ao vivo; save-done/erro atualizam a linha.
     offs.push(window.electronAPI?.onTorrentEvent?.((info) => {
@@ -489,6 +679,7 @@ export default function App() {
         const done = info.state === 'completed' || info.state === 'failed' || info.state === 'cancelled';
         const merged = {
           ...existing,
+          at: existing?.at ?? Date.now(),   // quando apareceu na lista (período do Limpar dados)
           id: info.id ?? existing?.id,
           kind: info.kind ?? existing?.kind,
           engine: info.engine ?? existing?.engine,
@@ -532,7 +723,7 @@ export default function App() {
 
   // ── Economia de memória (Memory Saver, estilo Chrome) ──
   // Aba parada há 30+ min (não ativa, sem áudio) tem o webview DESMONTADO → o Chromium
-  // libera o processo/RAM. Ao clicar na aba ela recarrega na URL onde estava (💤 na aba).
+  // libera o processo/RAM. Ao clicar na aba ela recarrega na URL onde estava (na barra ela fica igual às outras).
   const [memSaverOn, setMemSaverOn] = useState<boolean>(() => { try { return localStorage.getItem('memSaver') !== '0'; } catch { return true; } });
   const toggleMemSaver = useCallback(() => {
     setMemSaverOn(v => { const n = !v; try { localStorage.setItem('memSaver', n ? '1' : '0'); } catch {} return n; });
@@ -642,7 +833,6 @@ export default function App() {
   // o resto: nada limita por precaução, só por escolha explícita.
   // First-run guide: the bar is a hint until dismissed, the tour is a reopenable dialog.
   const [proxyOpen, setProxyOpen] = useState(false);
-  const [sitePermsOpen, setSitePermsOpen] = useState(false);
   const [regionOpen, setRegionOpen] = useState(false);
   const [folderGrants, setFolderGrants] = useState<Array<{ folder: string; path: string }>>([]);
   useEffect(() => { if (menuOpen) window.electronAPI?.uploadGrants?.().then(g => setFolderGrants(g || [])); }, [menuOpen]);
@@ -653,13 +843,6 @@ export default function App() {
     const offMain = window.electronAPI?.onRegionChanged?.(() => { void refreshRegion('peek'); });
     return () => { off(); offMain?.(); };
   }, []);
-  // Aba que a pessoa está VENDO (≠ activeTabIdRef, que segue a aba do agente durante a tarefa).
-  const shownTabRef = useRef(store.activeTabId);
-  shownTabRef.current = store.activeTabId;
-  const isVisibleTab = (wcId: number) => {
-    const wv = webviewRefs.current.get(shownTabRef.current) as any;
-    try { return !!wv && wv.getWebContentsId?.() === wcId; } catch { return false; }
-  };
   const [showGuide, setShowGuide] = useState<boolean>(() => { try { return localStorage.getItem('guideSeen') !== '1'; } catch { return true; } });
   const [showTour, setShowTour] = useState<boolean>(() => { try { return localStorage.getItem('tourSeen') !== '1'; } catch { return true; } });
   const [agentTimeLimitMin, setAgentTimeLimitMin] = useState<number>(() => {
@@ -686,34 +869,130 @@ export default function App() {
     const iv = setInterval(() => {
       const now = Date.now();
       for (const tb of sweepTabsRef.current) {
-        if (tb.id === sweepActiveIdRef.current || tb.hidden || tb.discarded) continue;
+        // Aba anônima nunca dorme (shared/incognito.ts → canDiscard).
+        if (tb.id === sweepActiveIdRef.current || tb.discarded || !canDiscard(tb)) continue;
         if (now - (tb.lastActiveAt || now) < idleMs) continue;
         const wv = webviewRefs.current.get(tb.id) as any;
         try { if (wv?.isCurrentlyAudible?.()) continue; } catch {}   // nunca dorme aba tocando som
         // audible:false junto — a webview morre sem emitir o "parou de tocar" final.
-        store.updateTab(tb.id, { discarded: true, audible: false });
+        store.updateTab(tb.id, { discarded: true, audible: false, restored: false });
       }
     }, 60000);
     return () => clearInterval(iv);
   }, [memSaverOn, store.updateTab]);
 
   // ── Favoritos (estilo Chrome) ──
+  // Salva a lista; false = não coube no localStorage (aí o import desiste em vez de perder no reinício).
+  const persistFavorites = (list: FlatBookmark[]): boolean => {
+    try { localStorage.setItem('favorites.v1', JSON.stringify(list)); return true; } catch { return false; }
+  };
   const saveFavorite = useCallback(() => {
     const t = store.activeTab;
     if (!t?.url || !/^https?:\/\//i.test(t.url)) { return; }
     setFavorites(prev => {
       if (prev.some(f => f.url === t.url)) { return prev; }
-      const next = [{ url: t.url, title: (t.title || t.url).slice(0, 80) }, ...prev].slice(0, 60);
-      try { localStorage.setItem('favorites.v1', JSON.stringify(next)); } catch {}
+      // Teto alto: com importação a lista passa fácil dos 60 de antes (a barra continua mostrando só o começo).
+      const next = [{ url: t.url, title: (t.title || t.url).slice(0, 80) }, ...prev].slice(0, MAX_FAVORITES);
+      persistFavorites(next);
       return next;
     });
   }, [store.activeTab]);
   const removeFavorite = useCallback((url: string) => {
     setFavorites(prev => {
       const next = prev.filter(f => f.url !== url);
-      try { localStorage.setItem('favorites.v1', JSON.stringify(next)); } catch {}
+      persistFavorites(next);
       return next;
     });
+  }, []);
+
+  // ── Importar / exportar favoritos (⋮ → Favoritos → Importar e exportar) ──
+  // O main acha e lê os arquivos (Chrome/Edge/HTML); aqui só junta na lista plana, sem repetir URL.
+  const favoritesRef = useRef(favorites);
+  favoritesRef.current = favorites;
+  const [favIoOpen, setFavIoOpen] = useState(false);
+  // ⋮ → "Favoritos ▸": submenu ao lado do menu (igual ao Chrome). Abre no clique ou parando o
+  // mouse em cima; fecha passando pra outro item, com Esc ou fechando o ⋮.
+  const [favMenuOpen, setFavMenuOpen] = useState(false);
+  const favMenuOpenRef = useRef(false);
+  favMenuOpenRef.current = favMenuOpen;
+  const favHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const favHoverCancel = useCallback(() => {
+    if (favHoverTimer.current) { clearTimeout(favHoverTimer.current); favHoverTimer.current = null; }
+  }, []);
+  const favHover = useCallback((open: boolean, ms: number) => {
+    favHoverCancel();
+    favHoverTimer.current = setTimeout(() => { favHoverTimer.current = null; setFavMenuOpen(open); }, ms);
+  }, [favHoverCancel]);
+  useEffect(() => {
+    if (menuOpen) return;
+    favHoverCancel();
+    setFavMenuOpen(false);
+    setFavIoOpen(false);
+  }, [menuOpen, favHoverCancel]);
+  useEffect(() => {
+    if (!menuOpen) return;
+    // Esc fecha o submenu primeiro, depois o ⋮ (só quando o foco está na interface do Bah).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      favHoverCancel();
+      if (favMenuOpenRef.current) setFavMenuOpen(false); else setMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menuOpen, favHoverCancel]);
+  // Barra de favoritos: lista estável (a barra só remede quando a lista muda de verdade).
+  const favBarItems = useMemo(() => favorites.slice(0, FAV_BAR_MAX), [favorites]);
+  const [favBusy, setFavBusy] = useState(false);
+  const [favSources, setFavSources] = useState<Array<{ id: 'chrome' | 'edge'; name: string }>>([]);
+  useEffect(() => {
+    if (!menuOpen) return;
+    window.electronAPI?.bookmarksSources?.().then(s => setFavSources(Array.isArray(s) ? s : [])).catch(() => {});
+  }, [menuOpen]);
+  // Aviso depois do React pintar a lista nova (o alert bloqueia a página).
+  const favNotice = (msg: string) => { setTimeout(() => window.alert(msg), 80); };
+  const favErrorText = (code: string) => t(({
+    'not-found': 'fav.err.notFound', empty: 'fav.err.empty', 'too-big': 'fav.err.tooBig',
+    'bad-format': 'fav.err.badFormat', 'write-failed': 'fav.err.write',
+  } as Record<string, string>)[code] || 'fav.err.read');
+  const importFavorites = useCallback(async (from: 'chrome' | 'edge' | 'html') => {
+    const api = window.electronAPI;
+    if (!api || favBusy) return;
+    setFavBusy(true);
+    try {
+      const r = from === 'html' ? await api.bookmarksImportHtml?.() : await api.bookmarksImportBrowser?.(from);
+      if (!r) return;
+      if (!r.ok) { if (r.error !== 'canceled') favNotice(favErrorText(r.error)); return; }
+      // Importados entram no FIM: onde eles aparecem depende de quantos a pessoa já tinha.
+      const start = favoritesRef.current.length;
+      const m = mergeFavorites(favoritesRef.current, r.items);
+      if (m.added && !persistFavorites(m.list)) { favNotice(t('fav.err.storage')); return; }
+      if (m.added) setFavorites(m.list);
+      const max = MAX_FAVORITES.toLocaleString();
+      const lines: string[] = [];
+      if (!m.added) {
+        // Nada entrou: ou já estava tudo no Bah, ou a lista está cheia (não confundir os dois).
+        lines.push(m.overLimit ? t('fav.importFull') : t('fav.importNone'));
+      } else {
+        lines.push(m.added === 1 ? t('fav.importDoneOne') : t('fav.importDone', { n: m.added.toLocaleString() }));
+        lines.push(t(start < FAV_BAR_MAX ? 'fav.importWhere' : start < FAV_MENU_MAX ? 'fav.importWhereMenu' : 'fav.importWhereSearch'));
+        if (m.duplicates) lines.push(m.duplicates === 1 ? t('fav.importDupOne') : t('fav.importDup', { n: m.duplicates.toLocaleString() }));
+        if (m.overLimit) lines.push(m.overLimit === 1 ? t('fav.importOverOne', { max }) : t('fav.importOver', { n: m.overLimit.toLocaleString(), max }));
+      }
+      favNotice(lines.join('\n'));
+    } catch { favNotice(t('fav.err.read')); }
+    finally { setFavBusy(false); }
+  }, [favBusy]);
+  const exportFavorites = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api?.bookmarksExport) return;
+    if (!favoritesRef.current.length) { favNotice(t('fav.exportEmpty')); return; }
+    try {
+      const r = await api.bookmarksExport(favoritesRef.current);
+      if (r.ok) favNotice(r.count === 1 ? t('fav.exportDoneOne', { file: r.file }) : t('fav.exportDone', { n: r.count.toLocaleString(), file: r.file }));
+      else if (r.error === 'empty') favNotice(t('fav.exportEmpty'));
+      else if (r.error !== 'canceled') favNotice(favErrorText(r.error));
+    } catch { favNotice(t('fav.err.write')); }
   }, []);
 
   // ── Histórico de navegação (alimenta o autocomplete da barra + tela Ctrl+H) ──
@@ -726,7 +1005,7 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyView, setHistoryView] = useState<Array<{ url: string; title: string; ts: number }>>([]);
   // ── Downloads (painel Ctrl+J) ──
-  const [downloads, setDownloads] = useState<Array<{ id?: string; kind?: string; engine?: boolean; connections?: number; map?: number[][]; filename: string; path?: string; url?: string; state: string; bytes?: number; totalBytes?: number; speedBps?: number; etaSec?: number; paused?: boolean; stalled?: boolean }>>([]);
+  const [downloads, setDownloads] = useState<Array<{ at?: number; id?: string; kind?: string; engine?: boolean; connections?: number; map?: number[][]; filename: string; path?: string; url?: string; state: string; bytes?: number; totalBytes?: number; speedBps?: number; etaSec?: number; paused?: boolean; stalled?: boolean }>>([]);
   // Espelho do painel pro loop do agente (o state fica velho dentro do loop async): list_downloads.
   const downloadsRef = useRef(downloads);
   downloadsRef.current = downloads;
@@ -812,9 +1091,10 @@ export default function App() {
     // O botão "Baixar" dos vídeos fala o idioma da UI: manda os textos novos.
     try { window.electronAPI?.setYoutubeDlButton?.(localStorage.getItem('ytDlButton') !== '0', ytDlLabels()); } catch {}
   }), []);
+  // Trocou o mecanismo de pesquisa (⋮) → placeholder da barra e o próprio menu se redesenham.
+  // Ao abrir, o main recebe o escolhido (pro "Pesquisar no … por" do clique direito).
+  useEffect(() => { syncSearchEngineToMain(); return onSearchEngineChange(() => forceI18n(n => n + 1)); }, []);
 
-  // Detecta a home do Google (nova aba) → barra de endereço mostra o placeholder em vez da URL.
-  const isGoogleHome = (u?: string) => !!u && /^https?:\/\/(www\.)?google\.[a-z.]+\/(webhp|\?|$)/i.test(u);
   // Login do Google (navegador real → importa sessão por CDP, automático). Reusado pelo
   // botão de vidro do painel e pelo item do menu ⋮.
   // Mostra "Conectado ao Google" no lugar do botão quando já existe sessão importada.
@@ -822,6 +1102,35 @@ export default function App() {
   const checkGoogleLogin = useCallback(async () => {
     try { const r = await window.electronAPI?.googleCheckLogin?.(); setGoogleLoggedIn(!!r?.loggedIn); } catch {}
   }, []);
+  // ── Limpar dados de navegação (menu ⋮ / Ctrl+Shift+Delete) ──
+  // Histórico e lista de downloads são daqui (renderer); cookies/cache vão pro main, que só
+  // mexe na sessão das abas. Os sites do período saem do histórico ANTES de apagá-lo.
+  const [clearDataOpen, setClearDataOpen] = useState(false);
+  const closeClearData = useCallback(() => setClearDataOpen(false), []);
+  const sitesInRange = useCallback((range: TimeRange) => originsVisited(historyRef.current, rangeSince(range, Date.now())).length, []);
+  const runClearData = useCallback(async (c: ClearChoice): Promise<boolean> => {
+    const since = rangeSince(c.range, Date.now());
+    let ok = true;
+    if (c.cookies || c.cache) {
+      const origins = c.range === 'all' ? [] : originsVisited(historyRef.current, since);
+      try {
+        const r = await window.electronAPI?.clearBrowsingData?.({ range: c.range, cookies: c.cookies, cache: c.cache, origins });
+        ok = !!r?.ok;
+      } catch { ok = false; }
+    }
+    if (c.history) {
+      const { kept, removed } = splitHistory(historyRef.current, since);
+      historyRef.current = kept;
+      try { if (kept.length) localStorage.setItem('history.v1', JSON.stringify(kept)); else localStorage.removeItem('history.v1'); } catch {}
+      setHistoryView(kept.slice(0, 300));
+      const gone = new Set(removed.map(h => h.url));
+      store.forgetClosedTabs(u => c.range === 'all' || gone.has(u));
+    }
+    if (c.downloads) setDownloads(prev => keepDownloads(prev, since));
+    // Cookies do Google podem ter saído → o menu ⋮ volta a mostrar "Entrar no Google".
+    if (c.cookies) checkGoogleLogin();
+    return ok;
+  }, [store.forgetClosedTabs, checkGoogleLogin]);
   useEffect(() => { checkGoogleLogin(); }, [checkGoogleLogin]);
 
   const handleGoogleLogin = useCallback(async () => {
@@ -848,6 +1157,7 @@ export default function App() {
   // "Entrar neste site pelo navegador": abre o site atual no navegador do sistema pro usuário
   // logar uma vez, e importa a sessão daquele domínio pro Bah.
   const handleSiteLogin = useCallback(async () => {
+    if (store.activeTab?.incognito) return;   // traria os cookies do site pro perfil normal (o item fica apagado)
     const url = store.activeTab?.url || '';
     let host = '';
     try { host = new URL(url).hostname.replace(/^www\./, ''); } catch {}
@@ -870,6 +1180,31 @@ export default function App() {
 
   const getActiveWebview = useCallback((): Electron.WebviewTag | null => {
     return webviewRefs.current.get(activeTabIdRef.current) ?? null;
+  }, []);
+
+  // Imprimir… (Ctrl+P / menu ⋮) e Salvar como PDF… (menu ⋮): sempre a página da ABA ATIVA,
+  // nunca a interface do Bah. O main confere a aba e abre o diálogo; aqui só traduz o resultado.
+  // PDF salvo aparece no painel de Downloads (abre sozinho), com "abrir arquivo" e "mostrar na pasta".
+  const printNotice = (msg: string) => { setTimeout(() => window.alert(msg), 80); };
+  const printPage = useCallback(async (mode: 'print' | 'pdf') => {
+    const api = window.electronAPI;
+    let wcId = 0;
+    // a aba que a pessoa vê, não a de trabalho do agente
+    try { wcId = (webviewRefs.current.get(userTabRef.current) as any)?.getWebContentsId?.() || 0; } catch {}
+    if (!wcId) { printNotice(t('print.err.noTab')); return; }
+    try {
+      const r = mode === 'print' ? await api?.printPage?.(wcId) : await api?.savePagePdf?.(wcId);
+      if (!r) return;
+      if (r.ok) {
+        if (mode === 'pdf') { setDlSettingsOpen(false); setDownloadsOpen(true); }
+        return;
+      }
+      if (r.error === 'canceled' || r.error === 'busy') return;
+      printNotice(t(({
+        'no-tab': 'print.err.noTab', empty: 'print.err.noTab', internal: 'print.err.internal', crashed: 'print.err.crashed',
+        'pdf-failed': 'print.err.pdfFailed', 'write-failed': 'print.err.write', timeout: 'print.err.timeout',
+      } as Record<string, string>)[r.error] || (mode === 'print' ? 'print.err.failed' : 'print.err.pdfFailed')));
+    } catch { printNotice(t(mode === 'print' ? 'print.err.failed' : 'print.err.pdfFailed')); }
   }, []);
 
   // "Ler esta página em voz alta" (menu ⋮). Toggle: fala → clica de novo → para. Raspa o
@@ -902,13 +1237,26 @@ export default function App() {
     if (!/^https?:\/\//i.test(url) && !/^file:/i.test(url)) {
       finalUrl = url.includes('.') && !url.includes(' ')
         ? `https://${url}`
-        : searchUrl(url);
+        : searchUrlFor(url);   // mecanismo escolhido no ⋮ (padrão: Google, mesmos parâmetros de antes)
     }
+    // Aba sem JavaScript (página do computador aberta de fora): site digitado ou favorito abre numa
+    // aba normal — nesta o site viria quebrado (os links dela o main já desvia igual).
+    if (store.activeTab?.noScript && !/^file:/i.test(finalUrl)) { store.addTab(stripTrackingParams(finalUrl)); return; }
     store.updateTab(store.activeTabId, { isLoading: true });
     // URL colada com rastreio (fbclid/gclid/…) entra já limpa — will-navigate não
     // cobre loadURL (navegação programática), então o strip é aqui.
     getActiveWebview()?.loadURL(stripTrackingParams(finalUrl)).catch(() => {});
   }, [store, getActiveWebview]);
+  // Favorito da barra / do "»": clique = aba atual; Ctrl+clique, botão do meio ou "Abrir em
+  // nova aba" = aba nova atrás (igual ao Chrome).
+  // (por ref: o navigate muda a cada render, e a barra é memo — não pode redesenhar à toa).
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+  const addBackgroundTab = store.addBackgroundTab;
+  const openFavorite = useCallback((url: string, newTab: boolean) => {
+    // Vendo uma aba anônima: o favorito em aba nova também abre anônimo.
+    if (newTab) addBackgroundTab(url, opensIncognito('from-tab', userOnIncognito())); else navigateRef.current(url);
+  }, [addBackgroundTab, userOnIncognito]);
 
   const goBack = useCallback(() => { getActiveWebview()?.goBack(); }, [getActiveWebview]);
   const goForward = useCallback(() => { getActiveWebview()?.goForward(); }, [getActiveWebview]);
@@ -928,7 +1276,9 @@ export default function App() {
   const [showGoogleRelogin, setShowGoogleRelogin] = useState(false);
   const [showCookieFix, setShowCookieFix] = useState(false);
   useEffect(() => {
-    const u = store.activeTab?.url || '';
+    // Aba anônima não tem a sessão do perfil (é normal cair no login do Google): nada de aviso
+    // de "sessão expirou" nem de consertar cookies — os dois mexem no perfil NORMAL.
+    const u = store.activeTab?.incognito ? '' : (store.activeTab?.url || '');
     // No uso normal logado a URL é mail.google.com/…; cair na tela de login do
     // accounts.google.com dentro do webview embutido = sessão quebrada.
     const broken = /^https?:\/\/accounts\.google\.com\/(ServiceLogin|signin|v3\/signin|InteractiveLogin)/i.test(u);
@@ -937,7 +1287,7 @@ export default function App() {
     // Cookies inconsistentes do Google → tela "CookieMismatch". Oferece limpar os cookies
     // do Google e reimportar o login em 1 clique.
     setShowCookieFix(/^https?:\/\/accounts\.google\.com\/CookieMismatch/i.test(u));
-  }, [store.activeTab?.url]);
+  }, [store.activeTab?.url, store.activeTab?.incognito]);
   const fixGoogleCookies = useCallback(async () => {
     setShowCookieFix(false);
     try { await window.electronAPI?.clearGoogleCookies?.(); } catch {}
@@ -1002,6 +1352,7 @@ export default function App() {
     const go = (t?: { id: string }) => { if (t) store.setActiveTabId(t.id); };
     switch (action) {
       case 'new-tab': store.addTab(); break;
+      case 'new-incognito-tab': void openIncognitoTab(); break;   // Ctrl+Shift+N
       case 'close-tab': closeTabByUser(store.activeTabId); break;
       case 'reopen-tab': store.reopenClosedTab(); break;
       case 'focus-url': { const el = document.querySelector('.url-input') as HTMLInputElement | null; if (el) { el.focus(); el.select(); } break; }
@@ -1011,6 +1362,10 @@ export default function App() {
       case 'forward': goForward(); break;
       case 'next-tab': if (visible.length) go(visible[(curIdx + 1) % visible.length]); break;
       case 'prev-tab': if (visible.length) go(visible[(curIdx - 1 + visible.length) % visible.length]); break;
+      // Ctrl+Shift+PageUp/PageDown (Chrome): a aba ativa anda uma casa; nas pontas do grupo dela
+      // (fixadas / outras) fica parada.
+      case 'move-tab-left': if (curIdx >= 0) store.moveTab(store.activeTabId, curIdx - 1); break;
+      case 'move-tab-right': if (curIdx >= 0) store.moveTab(store.activeTabId, curIdx + 1); break;
       case 'bookmark': { const u = store.activeTab.url; if (favorites.some(f => f.url === u)) removeFavorite(u); else saveFavorite(); break; }
       case 'zoom-in': case 'zoom-out': case 'zoom-reset': {
         const wv = getActiveWebview() as any; if (!wv) break;
@@ -1025,6 +1380,8 @@ export default function App() {
       }
       case 'history': setHistoryView(historyRef.current.slice(0, 300)); setHistoryOpen(true); break;
       case 'downloads': setDownloadsOpen(o => !o); break;
+      case 'clear-data': setMenuOpen(false); setClearDataOpen(true); break;
+      case 'print': printPage('print'); break;
       default:
         if (action.startsWith('tab-')) {
           const n = parseInt(action.slice(4), 10);
@@ -1080,7 +1437,7 @@ export default function App() {
           // página real aberta → é sobre a página (anexa o conteúdo), não busca web. Preço tem
           // fluxo próprio (não sequestrar). Determinístico → não depende do round-trip lento.
           const url = store.activeTab?.url || '';
-          const realPage = /^https?:\/\//.test(url) && !isGoogleHome(url);
+          const realPage = /^https?:\/\//.test(url) && !isNewTabPage(url);
           const priceish = /\b(quanto\s+custa|pre[çc]o|how\s+much|\bcost\b|barat)/i.test(m);
           if (aboutPage || (realPage && !priceish && pointsAtOpenScreen(m))) return 'page';
           return 'web';
@@ -1215,7 +1572,8 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
     const q = (query || '').trim();
     if (!q) return { results: [], blocked: false, error: 'Empty query.' };
     const engines = engineOrder();
-    const bgId = store.addHiddenTab(engines[0].url(q));
+    // Perguntou numa aba anônima: a busca escondida também é anônima.
+    const bgId = store.addHiddenTab(engines[0].url(q), opensIncognito('from-tab', aiOnIncognito()));
     const scrape = async (wv: Electron.WebviewTag) => {
       await waitForWebviewSettled(wv, '');
       await waitForSettle(wv, { maxMs: 4500, minMs: 300 });
@@ -1280,7 +1638,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
   // O tópico (contextual) e o cache ficam no AgentCommandBar.
   const fetchNewsHeadlines = useCallback(async (query: string): Promise<string[]> => {
     const q = (query || 'artificial intelligence').trim();
-    const bgId = store.addHiddenTab(`https://www.google.com/search?q=${encodeURIComponent(q)}&udm=12&${googleLocaleParams()}`);
+    const bgId = store.addHiddenTab(`https://www.google.com/search?q=${encodeURIComponent(q)}&udm=12&${googleLocaleParams()}`, opensIncognito('from-tab', aiOnIncognito()));
     try {
       let waited = 0;
       let bgWv = webviewRefs.current.get(bgId) as Electron.WebviewTag | undefined;
@@ -1302,6 +1660,28 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
     }
   }, [store]);
 
+  // Menu do botão direito numa aba: cada item age na aba CLICADA (que pode não ser a ativa).
+  const onTabCommand = (cmd: TabCommand, id: string) => {
+    const tab = store.tabs.find(x => x.id === id && !x.hidden);
+    if (!tab) return;
+    switch (cmd) {
+      // Na aba anônima, a nova à direita também é anônima (a cópia do "Duplicar" também: store).
+      case 'new-right': store.addTabAfter(id, undefined, opensIncognito('from-tab', tab.incognito) ? { incognito: true } : undefined); break;
+      case 'duplicate': store.duplicateTab(id); break;
+      case 'reload':
+        // Aba dormindo (Memory Saver) ou que voltou da última sessão não tem webview: acordar já carrega.
+        if (tab.discarded) store.updateTab(id, { discarded: false, restored: false, lastActiveAt: Date.now() });
+        else { try { webviewRefs.current.get(id)?.reload(); } catch {} }
+        break;
+      case 'pin': case 'unpin': store.setPinned(id, cmd === 'pin'); break;
+      case 'mute': case 'unmute': siteMute.setMuted(tab.url, cmd === 'mute', tab.incognito); break;
+      case 'close': store.closeTab(id); break;
+      case 'close-others': store.closeTabs(closeOthersIds(store.tabs, id)); break;
+      case 'close-right': store.closeTabs(closeRightIds(store.tabs, id)); break;
+      case 'reopen': store.reopenClosedTab(); break;
+    }
+  };
+
   return (
     <div className={`app-container${IS_MAC ? ' platform-mac' : ''}`}>
       <div className="top-bar">
@@ -1312,6 +1692,10 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
             onSelect={store.setActiveTabId}
             onClose={closeTabByUser}
             onNew={store.addTab}
+            onMove={store.moveTab}
+            onCommand={onTabCommand}
+            isMuted={siteMute.isMuted}
+            canReopen={store.hasClosedTabs}
           />
         </div>
         <HwMonitor />
@@ -1336,9 +1720,10 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
         </div>
       </div>
 
-      <div className="address-bar-row">
+      <div className={`address-bar-row${activeIncognito ? ' incognito' : ''}`}>
         <AddressBar
-          url={isGoogleHome(store.activeTab.url) ? '' : store.activeTab.url}
+          // Aba nova (página do buscador) e aba anônima ainda em branco: barra vazia.
+          url={isNewTabPage(store.activeTab.url) || (activeIncognito && isIncognitoBlank(store.activeTab.url)) ? '' : store.activeTab.url}
           isLoading={store.activeTab.isLoading}
           canGoBack={store.activeTab.canGoBack}
           canGoForward={store.activeTab.canGoForward}
@@ -1354,7 +1739,12 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               🕐 {tzChip === 'UTC' ? 'UTC' : tzChip.split('/').pop()!.replace(/_/g, ' ')}
             </button>
           ) : null}
+          incognito={activeIncognito}
         />
+        <ExtensionsToolbar incognito={activeIncognito} getActiveWcId={() => {
+          // A aba que a pessoa vê (não a de trabalho do agente). Lança até a webview anexar.
+          try { const id = (webviewRefs.current.get(store.activeTabId) as any)?.getWebContentsId?.(); return typeof id === 'number' ? id : null; } catch { return null; }
+        }} />
         <div className="menu-wrap">
           <button
             className={`menu-btn${downloads.some(d => d.state === 'started' || d.state === 'progress') ? ' dl-active' : ''}`}
@@ -1484,7 +1874,37 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
           {menuOpen && (
             <>
               <div className="menu-overlay" onClick={() => setMenuOpen(false)} />
-              <div className="menu-panel">
+              <div
+                className="menu-panel"
+                onMouseOver={e => {
+                  // Mouse foi pra OUTRO item do ⋮ → o submenu de favoritos fecha (com folga, igual ao Chrome).
+                  const item = (e.target as HTMLElement).closest('.menu-item');
+                  if (favMenuOpen && item && !item.classList.contains('menu-fav-trigger')) favHover(false, 300);
+                }}
+              >
+                {/* Nova aba anônima (o "Nova janela anônima" do Chrome, em aba): Ctrl+Shift+N. */}
+                <button className="menu-item" onClick={() => { setMenuOpen(false); void openIncognitoTab(); }} title={t('incog.menuTitle')}>
+                  <span className="menu-ic">🕶️</span>
+                  <span className="menu-label">{t('incog.newTab')}</span>
+                  <span className="menu-kbd">{INCOGNITO_KEY}</span>
+                </button>
+                <div className="menu-sep" />
+                <button
+                  className={`menu-item menu-fav-trigger${favMenuOpen ? ' on' : ''}`}
+                  onClick={() => { favHoverCancel(); setFavMenuOpen(true); }}
+                  onMouseEnter={() => { if (!favMenuOpen) favHover(true, 200); else favHoverCancel(); }}
+                  onMouseLeave={() => { if (!favMenuOpen) favHoverCancel(); }}
+                  aria-haspopup="menu"
+                  aria-expanded={favMenuOpen}
+                >
+                  <span className="menu-ic">⭐</span>
+                  <span className="menu-label">{t('menu.favorites')}</span>
+                  <span className="menu-chev">▸</span>
+                </button>
+                <div className="menu-sep" />
+                <SearchEngineMenu />
+                <StartupMenu />
+                <DefaultBrowserMenu />
                 <button className="menu-item" onClick={() => toggleAdblock()} title={t('menu.adblockTitle')}>
                   <span className="menu-ic">🛡️</span>
                   <span className="menu-label">{t('menu.adblock')}</span>
@@ -1526,10 +1946,6 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                 <button className="menu-item" onClick={() => { setMenuOpen(false); setRegionOpen(true); }} title={t('menu.regionTitle')}>
                   <span className="menu-ic">🌍</span>
                   <span className="menu-label">{t('menu.region')}</span>
-                </button>
-                <button className="menu-item" onClick={() => { setMenuOpen(false); setSitePermsOpen(true); }} title={t('menu.sitePermsTitle')}>
-                  <span className="menu-ic">🔒</span>
-                  <span className="menu-label">{t('menu.sitePerms')}</span>
                 </button>
                 <button className="menu-item" onClick={() => { setMenuOpen(false); setProxyOpen(true); }} title={t('menu.proxyTitle')}>
                   <span className="menu-ic">🌐</span>
@@ -1574,17 +1990,35 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   <span className="menu-ic">{pageSpeaking ? '⏹️' : '🔊'}</span>
                   <span className="menu-label">{pageSpeaking ? t('menu.readPageStop') : t('menu.readPage')}</span>
                 </button>
-                <button className="menu-item" onClick={() => { setMenuOpen(false); handleGoogleLogin(); }} title={t('menu.googleLoginTitle')}>
+                <button className="menu-item" onClick={() => { setMenuOpen(false); printPage('print'); }} title={t('menu.printTitle', { key: PRINT_KEY })}>
+                  <span className="menu-ic">🖨️</span>
+                  <span className="menu-label">{t('menu.print')}</span>
+                </button>
+                <button className="menu-item" onClick={() => { setMenuOpen(false); printPage('pdf'); }} title={t('menu.savePdfTitle')}>
+                  <span className="menu-ic">📄</span>
+                  <span className="menu-label">{t('menu.savePdf')}</span>
+                </button>
+                <button className="menu-item" onClick={() => { setMenuOpen(false); setClearDataOpen(true); }} title={t('menu.clearDataTitle', { key: CLEAR_DATA_KEY })}>
+                  <span className="menu-ic">🧹</span>
+                  <span className="menu-label">{t('menu.clearData')}</span>
+                </button>
+                <button className="menu-item" onClick={() => { setMenuOpen(false); setPasswordsOpen({}); }} title={t('pw.menuTitle')}>
+                  <span className="menu-ic">🔑</span>
+                  <span className="menu-label">{t('pw.menu')}</span>
+                </button>
+                {/* Entrar no Google / neste site trazem os cookies pro perfil NORMAL: numa aba anônima
+                    não fariam sentido (e misturariam as duas) — ficam apagados, com o porquê. */}
+                <button className="menu-item" disabled={activeIncognito} onClick={() => { setMenuOpen(false); handleGoogleLogin(); }} title={activeIncognito ? t('incog.loginOff') : t('menu.googleLoginTitle')}>
                   <span className="menu-ic">{googleLoggedIn ? '✓' : '🔑'}</span>
                   <span className={`menu-label${googleLoggedIn ? ' connected' : ''}`}>{googleLoggedIn ? t('menu.googleConnected') : t('menu.googleLogin')}</span>
                 </button>
                 {googleLoggedIn && (
-                  <button className="menu-item" onClick={() => { setMenuOpen(false); handleGoogleSwitch(); }} title={t('menu.googleSwitchTitle')}>
+                  <button className="menu-item" disabled={activeIncognito} onClick={() => { setMenuOpen(false); handleGoogleSwitch(); }} title={activeIncognito ? t('incog.loginOff') : t('menu.googleSwitchTitle')}>
                     <span className="menu-ic">🔄</span>
                     <span className="menu-label">{t('menu.googleSwitch')}</span>
                   </button>
                 )}
-                <button className="menu-item" onClick={() => { setMenuOpen(false); handleSiteLogin(); }} title={t('menu.siteLoginTitle')}>
+                <button className="menu-item" disabled={activeIncognito} onClick={() => { setMenuOpen(false); handleSiteLogin(); }} title={activeIncognito ? t('incog.loginOff') : t('menu.siteLoginTitle')}>
                   <span className="menu-ic">🔓</span>
                   <span className="menu-label">{t('menu.siteLogin')}</span>
                 </button>
@@ -1592,27 +2026,63 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   <span className="menu-ic">🛰️</span>
                   <span className="menu-label">{t('mon.title')}</span>
                 </button>
-                <div className="menu-sep" />
-                <div className="menu-section-title">
-                  <span>⭐ {t('menu.favorites')}</span>
-                  <button className="menu-add" onClick={saveFavorite} title={t('menu.save')}>{t('menu.save')}</button>
-                </div>
-                {favorites.length === 0 ? (
-                  <div className="menu-empty">{t('menu.noFavorites')}</div>
-                ) : (
-                  <div className="menu-favlist">
-                    {favorites.map(f => (
-                      <div key={f.url} className="fav-item">
-                        <button className="fav-open" onClick={() => { navigate(f.url); setMenuOpen(false); }} title={f.url}>
-                          <span className="fav-title">{f.title}</span>
-                          <span className="fav-url">{(() => { try { return new URL(f.url).hostname.replace(/^www\./, ''); } catch { return f.url; } })()}</span>
-                        </button>
-                        <button className="fav-del" onClick={() => removeFavorite(f.url)} title={t('fav.remove')}>✕</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
+              {favMenuOpen && (
+                <div className="menu-panel menu-flyout" onMouseEnter={favHoverCancel}>
+                  <button className="menu-item" disabled={!/^https?:\/\//i.test(store.activeTab?.url || '')} onClick={() => {
+                    const u = store.activeTab.url;
+                    if (favorites.some(f => f.url === u)) removeFavorite(u); else saveFavorite();
+                    setMenuOpen(false);
+                  }}>
+                    <span className="menu-ic">{favorites.some(f => f.url === store.activeTab?.url) ? '★' : '☆'}</span>
+                    <span className="menu-label">{favorites.some(f => f.url === store.activeTab?.url) ? t('fav.removeThis') : t('fav.addThis')}</span>
+                    <span className="menu-kbd">{BOOKMARK_KEY}</span>
+                  </button>
+                  <button className="menu-item" onClick={() => setFavIoOpen(o => !o)} title={t('fav.ioTitle')} aria-expanded={favIoOpen}>
+                    <span className="menu-ic">↕️</span>
+                    <span className="menu-label">{t('fav.io')}</span>
+                    <span className="menu-chev">{favIoOpen ? '▾' : '▸'}</span>
+                  </button>
+                  {favIoOpen && (
+                    <div className="menu-sub">
+                      {favSources.map(s => (
+                        <button key={s.id} className="menu-item" disabled={favBusy} onClick={() => importFavorites(s.id)}>
+                          <span className="menu-ic">📥</span>
+                          <span className="menu-label">{favBusy ? t('fav.busy') : t('fav.importFrom', { browser: s.name })}</span>
+                        </button>
+                      ))}
+                      <button className="menu-item" disabled={favBusy} onClick={() => importFavorites('html')}>
+                        <span className="menu-ic">📄</span>
+                        <span className="menu-label">{favBusy ? t('fav.busy') : t('fav.importHtml')}</span>
+                      </button>
+                      <button className="menu-item" disabled={favBusy || favorites.length === 0} onClick={() => exportFavorites()}>
+                        <span className="menu-ic">📤</span>
+                        <span className="menu-label">{t('fav.export')}</span>
+                      </button>
+                    </div>
+                  )}
+                  <div className="menu-sep" />
+                  {favorites.length === 0 ? (
+                    <div className="menu-empty">{t('menu.noFavorites')}</div>
+                  ) : (
+                    <div className="menu-favlist">
+                      {/* Só o começo: com milhares importados, desenhar tudo travaria o menu. O resto acha pela barra de endereço. */}
+                      {favorites.slice(0, FAV_MENU_MAX).map(f => (
+                        <div key={f.url} className="fav-item">
+                          <button className="fav-open" onClick={() => { navigate(f.url); setMenuOpen(false); }} title={f.title ? `${f.title}\n${f.url}` : f.url}>
+                            <SiteIcon url={f.url} title={f.title} />
+                            <span className="fav-title">{f.title || f.url}</span>
+                          </button>
+                          <button className="fav-del" onClick={() => removeFavorite(f.url)} title={t('fav.remove')}>✕</button>
+                        </div>
+                      ))}
+                      {favorites.length > FAV_MENU_MAX && (
+                        <div className="menu-empty">{favorites.length - FAV_MENU_MAX === 1 ? t('fav.moreOne') : t('fav.more', { n: (favorites.length - FAV_MENU_MAX).toLocaleString() })}</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
           {monitorsOpen && (
@@ -1626,20 +2096,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
 
       {/* Barra de favoritos (estilo Chrome) — aparece quando há favoritos salvos. */}
       {favorites.length > 0 && (
-        <div className="bookmarks-bar">
-          {favorites.map(f => (
-            <button key={f.url} className="bookmark-chip" onClick={() => navigate(f.url)} title={f.url}>
-              <img
-                className="bm-fav"
-                src={(() => { try { return `${new URL(f.url).origin}/favicon.ico`; } catch { return ''; } })()}
-                alt=""
-                draggable={false}
-                onError={e => { (e.currentTarget.style.visibility = 'hidden'); }}
-              />
-              <span className="bm-title">{(() => { try { return f.title || new URL(f.url).hostname.replace(/^www\./, ''); } catch { return f.title || f.url; } })()}</span>
-            </button>
-          ))}
-        </div>
+        <BookmarksBar items={favBarItems} onOpen={openFavorite} onRemove={removeFavorite} lang={getLang()} />
       )}
 
       <div className={`main-content ${store.sidebarOpen ? 'ai-open' : ''}`}>
@@ -1651,14 +2108,28 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
             onUpdateTab={(id, patch) => {
               store.updateTab(id, patch);
               // Registra no histórico só páginas reais de abas VISÍVEIS (ignora abas de
-              // busca em segundo plano da Pesquisa Rápida).
+              // busca em segundo plano da Pesquisa Rápida) e nunca de aba anônima — é o mesmo
+              // histórico que a barra de endereço usa pra sugerir.
               if (patch.url) {
-                const tab = tabsRef.current.find(t => t.id === id);
-                if (!tab?.hidden) recordHistory(patch.url, patch.title);
+                const tab = tabsRef.current.find(t => t.id === id) ?? store.tabs.find(t => t.id === id);
+                if (tab && !tab.hidden && mayRecord('history', tab.incognito)) recordHistory(patch.url, patch.title);
               }
             }}
             onNewTab={store.addTab}
           />
+          {/* Aba anônima que ainda não abriu nada: a explicação (desenhada aqui, sem internet). */}
+          {activeIncognito && isIncognitoBlank(store.activeTab.url) && <IncognitoPage />}
+          <PermissionPrompt ask={permAsks.find(a => a.tabId === store.activeTabId)} onAnswer={answerPerm} />
+          <PasswordSavePrompt offer={pwOffers.find(o => o.tabId === store.activeTabId)} onAnswer={answerPwOffer} onReveal={revealPwOffer} />
+          {pwSuggest && pwSuggest.tabId === store.activeTabId && (
+            <PasswordSuggest
+              suggest={pwSuggest}
+              getWebview={() => webviewRefs.current.get(pwSuggest.tabId) as unknown as HTMLElement | undefined}
+              onPick={(entryId) => pickPwSuggest(pwSuggest.id, entryId)}
+              onManage={() => { const host = pwSuggest.host; setPwSuggest(null); setPasswordsOpen({ query: host }); }}
+              onClose={closePwSuggest}
+            />
+          )}
           <AgentVisualOverlay state={agentVisual} ripples={ripples} metrics={agentVisual === 'idle' ? null : liveMetrics} />
           {torrent && (
             <TorrentSheet
@@ -1694,10 +2165,8 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
             </div>
           )}
           {proxyOpen && <ProxySettings onClose={() => setProxyOpen(false)} />}
-          {sitePermsOpen && <SitePermissionsPanel onClose={() => setSitePermsOpen(false)} />}
           {regionOpen && <RegionPanel onClose={() => setRegionOpen(false)} />}
           <JsDialogHost />
-          <SitePermissionBar isVisibleTab={isVisibleTab} />
           <ProxyAuthPrompt />
           {showGuide && (
             <AppGuideBar
@@ -1730,9 +2199,10 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
           <AgentCommandBar
             activeTabId={store.activeTabId}
             tabIds={store.tabs.map(t => t.id).join(',')}
-            pageOpen={/^https?:\/\//.test(store.activeTab?.url || '') && !isGoogleHome(store.activeTab?.url)}
+            pageOpen={/^https?:\/\//.test(store.activeTab?.url || '') && !isNewTabPage(store.activeTab?.url)}
             activeTabTitle={store.activeTab?.title}
             activeTabUrl={store.activeTab?.url}
+            activeIncognito={activeIncognito}
             agentMaxSteps={agentMaxSteps}
             onAgentStepsChange={(n) => {
               setAgentMaxSteps(n);
@@ -1780,9 +2250,14 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
             agentDrive={agentDrive}
             panelOpen={store.sidebarOpen}
             onExecute={async (command, onProgress, signal, opts) => {
-              const runLog = startAgentRun(command);
               const taskTabId = activeTabIdRef.current;   // aba de origem desta tarefa (não muda se o agente abrir abas)
               agentDialogsStart();   // alert/confirm/prompt das abas do agente seguem a política dele (js-dialogs.ts)
+              // Tarefa que começa numa aba anônima é anônima até o fim: as abas que ela abrir nascem
+              // anônimas e nada dela fica guardado (nem o registro da tarefa, nem os passos no
+              // agent.log, no main). Marcado ANTES do registro começar.
+              privateTaskRef.current = !!tabsRef.current.find(t => t.id === taskTabId)?.incognito;
+              if (privateTaskRef.current) window.electronAPI?.setPrivateAi?.(true);
+              const runLog = startAgentRun(command);
               taskRunningRef.current = true;   // a partir daqui, trocas MANUAIS de aba não mexem na aba do agente
               interjectRef.current = { running: true, queue: [], abortStep: null };
               // Suspende o bypass do adblock enquanto o agente trabalha: senão ele lê os
@@ -2541,8 +3016,12 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       return `${isNew ? '*' : ' '}[${e.id}] <${e.tag}${attrStr}>${text}</${e.tag}>${repeat}`;
                     }).join('\n');
                   prevElementKeys = curElementKeys;
+                  // Tarefa de aba normal não enxerga as abas anônimas (nome e endereço não vão pro
+                  // modelo), igual a uma extensão no Chrome. O número fica, pra não trocar os índices.
                   const tabsList = tabsRef.current
-                    .map((t, i) => `[${i}]${t.id === activeTabIdRef.current ? ' (active)' : ''}${agentOpenedTabs.has(t.id) ? ' (agent tab)' : t.id === taskTabId ? ' (starting tab)' : grantedTabs.has(t.id) ? ' (your tab — allowed)' : getPerm('userTabs') === 'deny' ? ' (your tab — no access)' : ' (your tab — ask first)'} "${(t.title || 'Untitled').slice(0, 60)}" — ${t.url}`)
+                    .map((t, i) => (t.incognito && !privateTaskRef.current)
+                      ? `[${i}] (incognito tab — not available to this task)`
+                      : `[${i}]${t.id === activeTabIdRef.current ? ' (active)' : ''}${agentOpenedTabs.has(t.id) ? ' (agent tab)' : t.id === taskTabId ? ' (starting tab)' : grantedTabs.has(t.id) ? ' (your tab — allowed)' : getPerm('userTabs') === 'deny' ? ' (your tab — no access)' : ' (your tab — ask first)'} "${(t.title || 'Untitled').slice(0, 60)}" — ${t.url}`)
                     .join('\n');
                   const planBlock = plan.length
                     ? `PLAN (${plan.length} steps):\n${plan.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`
@@ -3889,7 +4368,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       // (no clique da aba) dá play. Sem isso, as N abas tocavam todas juntas.
                       const originTabId = activeTabIdRef.current;
                       const opened: string[] = [];
-                      for (const v of vids) { try { opened.push(store.addTab(v.url)); } catch {} }
+                      for (const v of vids) { try { opened.push(store.addTab(v.url, opensIncognito('from-tab', aiOnIncognito()))); } catch {} }
                       store.setActiveTabId(originTabId);
                       activeTabIdRef.current = originTabId;
                       opened.forEach(id => { pausedCutTabsRef.current.set(id, 0); armCutTab(id); });
@@ -3925,7 +4404,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       const originTabId = activeTabIdRef.current;
                       const opened: string[] = [];
                       for (const c of vc.cuts) {
-                        opened.push(store.addTab(`https://www.youtube.com/watch?v=${c.videoId}&t=${c.seconds}s`));
+                        opened.push(store.addTab(`https://www.youtube.com/watch?v=${c.videoId}&t=${c.seconds}s`, opensIncognito('from-tab', aiOnIncognito())));
                       }
                       store.setActiveTabId(originTabId);
                       activeTabIdRef.current = originTabId;
@@ -3992,7 +4471,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                         // addBackgroundTab (NÃO addTab): a tabela abre na barra de abas, mas
                         // sem roubar o foco — senão o painel da IA (que segue a aba ATIVA)
                         // ficava em branco, escondendo esta própria resposta.
-                        const newId = store.addBackgroundTab(rv.url);
+                        const newId = store.addBackgroundTab(rv.url, opensIncognito('from-tab', aiOnIncognito()));
                         activeTabIdRef.current = newId;
                         const doneMsg = `${sorted.length} offers for "${q}". Cheapest: ${c.title} — R$ ${fmt(c.price)}${c.store ? ` (${c.store})` : ''}. Comparison table opened in a tab.`;
                         onProgress({ kind: 'status', message: `✅ ${doneMsg}` });
@@ -4037,7 +4516,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       const rv = await window.electronAPI?.renderView?.(spec);
                       if (rv?.success && rv.url) {
                         // addBackgroundTab: mesma razão do compare_prices acima.
-                        const newId = store.addBackgroundTab(rv.url);
+                        const newId = store.addBackgroundTab(rv.url, opensIncognito('from-tab', aiOnIncognito()));
                         activeTabIdRef.current = newId;
                         const doneMsg = `${valid.length} news for "${q}". Top: ${valid[0].title}${valid[0].source ? ` (${valid[0].source})` : ''}. Panel opened in a tab.`;
                         onProgress({ kind: 'status', message: `✅ ${doneMsg}` });
@@ -4079,7 +4558,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       const rv = await window.electronAPI?.renderView?.(spec);
                       if (rv?.success && rv.url) {
                         // addBackgroundTab: mesma razão do compare_prices acima.
-                        const newId = store.addBackgroundTab(rv.url);
+                        const newId = store.addBackgroundTab(rv.url, opensIncognito('from-tab', aiOnIncognito()));
                         activeTabIdRef.current = newId;
                         const doneMsg = `Done: "${spec.title}" opened in a new tab (${spec.rows?.length ?? 0} rows, sortable table + chart).`;
                         onProgress({ kind: 'status', message: `✅ ${doneMsg}` });
@@ -4136,7 +4615,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       let urls: string[] = [];
                       // Raspa numa ABA OCULTA (same-origin evita 403, mas NÃO abre o buscador
                       // na cara do usuário — igual à Pesquisa Rápida). A aba some no fim.
-                      const imgBgId = store.addHiddenTab(`https://duckduckgo.com/?q=${encodeURIComponent(q)}&iax=images&ia=images`);
+                      const imgBgId = store.addHiddenTab(`https://duckduckgo.com/?q=${encodeURIComponent(q)}&iax=images&ia=images`, opensIncognito('from-tab', aiOnIncognito()));
                       try {
                         let iw = 0;
                         let bgWv = webviewRefs.current.get(imgBgId) as Electron.WebviewTag | undefined;
@@ -4350,12 +4829,13 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     };
                   } else if (action.type === 'switch_tab') {
                     const target = tabsRef.current[action.tab];
-                    const allowed = !target || grantedTabs.has(target.id) || agentOpenedTabs.has(target.id)
-                      || await askPermission('userTabs', `Switch to your tab "${(target.title || target.url).slice(0, 80)}" for this task.`);
-                    if (target && allowed) grantedTabs.add(target.id);
-                    if (target && !allowed) {
+                    if (target && target.incognito && !privateTaskRef.current) {
+                      toolResult = { success: false, error: `Tab ${action.tab} is an incognito tab: not available to this task.` };
+                    } else if (target && !(grantedTabs.has(target.id) || agentOpenedTabs.has(target.id)
+                      || await askPermission('userTabs', `Switch to your tab "${(target.title || target.url).slice(0, 80)}" for this task.`))) {
                       toolResult = { success: false, error: `The user did not allow the agent to use their tab "${(target.title || '').slice(0, 60)}". Work in the starting tab or open a new tab.` };
                     } else if (target) {
+                      grantedTabs.add(target.id);
                       store.setActiveTabId(target.id);
                       activeTabIdRef.current = target.id;
                       toolResult = { success: true, info: { switchedTo: action.tab } };
@@ -4366,7 +4846,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     if (!/^https?:\/\//i.test(action.url || '')) {
                       toolResult = { success: false, error: `Blocked: the agent only opens http(s) pages, not "${action.url}".` };
                     } else {
-                    const newId = store.addTab(action.url);
+                    const newId = store.addTab(action.url, opensIncognito('from-tab', aiOnIncognito()));   // tarefa de aba anônima → aba anônima
                     agentOpenedTabs.add(newId);
                     grantedTabs.add(newId);
                     store.updateTab(newId, { agentTask: true });
@@ -4383,19 +4863,21 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     }
                   } else if (action.type === 'close_tab') {
                     const target = tabsRef.current[action.tab];
-                    if (target && !agentOpenedTabs.has(target.id)) {
+                    if (target && target.incognito && !privateTaskRef.current) {
+                      toolResult = { success: false, error: `Tab ${action.tab} is an incognito tab: not available to this task.` };
+                    } else if (target && !agentOpenedTabs.has(target.id)) {
                       toolResult = { success: false, error: 'Only tabs the agent opened in this task can be closed — this one belongs to the user.' };
                     } else if (target) {
                       // Se a aba fechada é a aba de TRABALHO do agente, o freio anti-troca-de-aba
                       // (taskRunningRef) impede o espelhamento de corrigir o ref → ele apontaria pra
                       // aba MORTA e o passo seguinte quebraria (getActiveWebview null). Então
-                      // atualizamos na mão pra próxima aba ativa (mesma lógica do store.closeTab).
+                      // atualizamos na mão pra próxima aba ativa (mesma regra do store.closeTab: a
+                      // vizinha que sobrou NA BARRA — nunca uma aba escondida).
                       const wasActive = target.id === activeTabIdRef.current;
                       store.closeTab(target.id);
                       if (wasActive) {
-                        const idx = tabsRef.current.findIndex(t => t.id === target.id);
-                        const remaining = tabsRef.current.filter(t => t.id !== target.id);
-                        if (remaining.length > 0) activeTabIdRef.current = remaining[Math.min(idx, remaining.length - 1)].id;
+                        const nextId = nextActiveAfterClose(tabsRef.current, new Set([target.id]), target.id);
+                        if (nextId) activeTabIdRef.current = nextId;
                       }
                       toolResult = { success: true, info: { closed: action.tab } };
                     } else toolResult = { success: false, error: `Tab ${action.tab} not found` };
@@ -5128,6 +5610,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                 agentDialogsStop();
                 taskEndedAtRef.current = Date.now();
                 for (const t of tabsRef.current) if (t.agentTask) store.updateTab(t.id, { agentTask: false });
+                if (privateTaskRef.current) { privateTaskRef.current = false; window.electronAPI?.setPrivateAi?.(false); }
                 // O que chegou depois do último passo (a IA já tinha decidido terminar) fica na
                 // fila: a barra pega e roda como o próximo pedido — mensagem nunca some.
                 interjectRef.current = { running: false, queue: interjectRef.current.queue, abortStep: null };
@@ -5194,10 +5677,12 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
             onResearch={runWebResearch}
             onClassify={classifyIntent}
             onFetchHeadlines={fetchNewsHeadlines}
-            onGoogleLogin={handleGoogleLogin}
+            // Aba anônima: sem o botão "Entrar no Google" (importaria a sessão pro perfil normal).
+            onGoogleLogin={activeIncognito ? undefined : handleGoogleLogin}
             googleLoggedIn={googleLoggedIn}
             isStartupTab={!!store.activeTab?.startup}
-            onOpenUrl={(url: string) => { const id = store.addTab(url); activeTabIdRef.current = id; }}
+            // Link da resposta da IA: na aba anônima, abre anônimo também.
+            onOpenUrl={(url: string) => { const id = store.addTab(url, opensIncognito('from-tab', aiOnIncognito())); activeTabIdRef.current = id; }}
             onClose={() => store.setSidebarOpen(false)}
             aiSettings={store.aiSettings}
             onSettingsChange={async (settings) => {
@@ -5254,6 +5739,9 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
           </div>
         </div>
       )}
+      {clearDataOpen && <ClearDataDialog onClose={closeClearData} sitesInRange={sitesInRange} onClear={runClearData} />}
+      {/* ⋮ → Senhas (ou "Gerenciar senhas…" da lista em cima do campo, já filtrado pelo site). */}
+      {passwordsOpen && <PasswordsPanel initialQuery={passwordsOpen.query} onClose={() => setPasswordsOpen(null)} />}
       {/* dead second AgentCommandBar removed */}
     </div>
   );

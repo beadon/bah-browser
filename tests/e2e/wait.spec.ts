@@ -10,6 +10,8 @@ const ROOT = path.resolve(__dirname, '../..');
 const ELECTRON = process.platform === 'win32' ? path.join(ROOT, 'node_modules/electron/dist/electron.exe')
   : process.platform === 'darwin' ? path.join(ROOT, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron')
   : path.join(ROOT, 'node_modules/electron/dist/electron');
+// --use-mock-keychain: no macOS o cofre de senhas (safeStorage) abre um pedido do Chaveiro que trava o main
+// num perfil novo de teste; o chaveiro falso do Chromium evita o pedido.
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PAGE = `<!doctype html><title>Search</title><h1>Search</h1><div id="s">Loading…</div>
 <a href="/orders/123" onclick="event.preventDefault(); setTimeout(function(){ location.href='/orders/123'; }, 1500)">Go to orders</a>
@@ -36,7 +38,7 @@ test('wait for text, text gone, URL glob and network idle', async () => {
     { type: 'done', reason: 'Waited for everything.', success: true },
   ];
   const { ELECTRON_RUN_AS_NODE: _n, ...env } = process.env;
-  const app = await electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${tmp}`], env: { ...env, E2E_MOCK_AI: '1', E2E_MOCK_SCRIPT: JSON.stringify(script), NODE_ENV: 'test' } });
+  const app = await electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${tmp}`, '--use-mock-keychain'], env: { ...env, E2E_MOCK_AI: '1', E2E_MOCK_SCRIPT: JSON.stringify(script), NODE_ENV: 'test' } });
   try {
     const page = await app.firstWindow(); await page.waitForLoadState('domcontentloaded'); await sleep(1500);
     await page.evaluate(() => { localStorage.setItem('tourSeen', '1'); localStorage.setItem('guideSeen', '1'); });

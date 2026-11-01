@@ -13,6 +13,8 @@ const ROOT = path.resolve(__dirname, '../..');
 const ELECTRON = process.platform === 'win32' ? path.join(ROOT, 'node_modules/electron/dist/electron.exe')
   : process.platform === 'darwin' ? path.join(ROOT, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron')
   : path.join(ROOT, 'node_modules/electron/dist/electron');
+// --use-mock-keychain: no macOS o cofre de senhas (safeStorage) abre um pedido do Chaveiro que trava o main
+// num perfil novo de teste; o chaveiro falso do Chromium evita o pedido.
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const USER = 'e2e-user', PASS = 'e2e-' + crypto.randomBytes(6).toString('hex');   // made up here, test-only
 const want = 'Basic ' + Buffer.from(`${USER}:${PASS}`).toString('base64');
@@ -40,13 +42,13 @@ test('corporate proxy: settings, 407 sign-in, page + Bah fetch + download throug
   const T = `http://127.0.0.1:${(target.address() as net.AddressInfo).port}`, P = `127.0.0.1:${(proxy.address() as net.AddressInfo).port}`;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bah-proxy-'));
   const { ELECTRON_RUN_AS_NODE: _n, HTTPS_PROXY: _a, HTTP_PROXY: _b, ...env } = process.env;
-  const app = await electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${tmp}`], env: { ...env, E2E_MOCK_AI: '1', NODE_ENV: 'test' } });
+  const app = await electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${tmp}`, '--use-mock-keychain'], env: { ...env, E2E_MOCK_AI: '1', NODE_ENV: 'test' } });
   try {
     const page = await app.firstWindow(); await page.waitForLoadState('domcontentloaded'); await sleep(1500);
     await page.evaluate(() => { localStorage.setItem('tourSeen', '1'); localStorage.setItem('guideSeen', '1'); });
     await page.reload(); await page.waitForLoadState('domcontentloaded'); await sleep(2000);
     // 1. settings panel
-    await page.locator('.menu-btn').last().click(); await page.locator('.menu-item', { hasText: 'Network & proxy' }).click();
+    await page.locator('.menu-btn[title="Menu"]').click(); await page.locator('.menu-item', { hasText: 'Network & proxy' }).click();
     await page.locator('.proxy-mode').selectOption('manual');
     await page.locator('.proxy-server').fill(P); await page.locator('.proxy-bypass').fill('<-loopback>');
     await page.locator('.proxy-save').click(); await page.locator('.proxy-status', { hasText: 'Saved' }).waitFor({ timeout: 5000 });
@@ -76,13 +78,13 @@ test('corporate proxy: settings, 407 sign-in, page + Bah fetch + download throug
     await sleep(3000);
     ok(r?.success && seen.slice(n1).some(s => s.url === T + '/file.bin' && s.authed), 'download went through the proxy: ' + JSON.stringify(r?.info || r).slice(0, 160));
     // 5. Test connection button reports the route
-    await page.locator('.menu-btn').last().click(); await page.locator('.menu-item', { hasText: 'Network & proxy' }).click();
+    await page.locator('.menu-btn[title="Menu"]').click(); await page.locator('.menu-item', { hasText: 'Network & proxy' }).click();
     ok(await page.locator('.proxy-server').inputValue() === P, 'panel reloads the saved server');
     await page.locator('.proxy-card .tour-x').click();
     const tr: any = await app.evaluate(async ({ session }: any, u: string) => ({ via: await session.fromPartition('persist:browser').resolveProxy(u) }), T);
     ok(/PROXY 127\.0\.0\.1/.test(tr.via), 'resolveProxy: ' + tr.via);
     // 6. switch back to direct
-    await page.locator('.menu-btn').last().click(); await page.locator('.menu-item', { hasText: 'Network & proxy' }).click();
+    await page.locator('.menu-btn[title="Menu"]').click(); await page.locator('.menu-item', { hasText: 'Network & proxy' }).click();
     await page.locator('.proxy-mode').selectOption('direct'); await page.locator('.proxy-save').click(); await sleep(500);
     const n2 = seen.length; await app.evaluate(async (_e: any, u: string) => (await fetch(u + '/direct')).text(), T);
     ok(seen.length === n2, 'direct mode bypasses the proxy');

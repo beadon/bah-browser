@@ -1,11 +1,20 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { VisionImage } from '../shared/vision';
+import type { PasswordsBridge } from '../shared/password-types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
   minimize: () => ipcRenderer.invoke('window:minimize'),
   maximize: () => ipcRenderer.invoke('window:maximize'),
   close: () => ipcRenderer.invoke('window:close'),
+  // Continuar de onde parou: antes de fechar a janela, o main pede pra tela gravar as abas e
+  // espera o "gravei"; a tela pede pra mandar o localStorage pro disco quando a sessão muda.
+  onSaveSessionNow: (cb: () => void) => {
+    const listener = () => { try { cb(); } catch {} ipcRenderer.send('session:saved'); };
+    ipcRenderer.on('session:save-now', listener);
+    return () => ipcRenderer.removeListener('session:save-now', listener);
+  },
+  flushUiStorage: () => ipcRenderer.send('session:flush-storage'),
 
   // AI
   setAIProvider: (provider: string, apiKey: string, baseUrl?: string, model?: string) =>
@@ -74,17 +83,104 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('ollama:pull-progress', listener);
     return () => ipcRenderer.removeListener('ollama:pull-progress', listener);
   },
-  onOpenNewTab: (cb: (url: string) => void) => {
-    const listener = (_e: any, url: string) => cb(url);
+  // opts.incognito: abrir como aba anônima (popup/pesquisa de aba anônima, "Abrir link em aba anônima").
+  onOpenNewTab: (cb: (url: string, opts?: { incognito?: boolean }) => void) => {
+    const listener = (_e: any, url: string, opts?: { incognito?: boolean }) => cb(url, opts && typeof opts === 'object' ? { incognito: opts.incognito === true } : undefined);
     ipcRenderer.on('open-new-tab', listener);
     return () => ipcRenderer.removeListener('open-new-tab', listener);
   },
+  // Link/arquivo de outro app (Bah como navegador padrão, main/default-browser.ts) → aba. noScript:
+  // página do computador, abre sem JavaScript; launch: foi ela que abriu o Bah agora.
+  onOutsideOpen: (cb: (p: { url: string; noScript: boolean; launch: boolean }) => void) => {
+    const listener = (_e: unknown, p: any) => {
+      if (p && typeof p.url === 'string') cb({ url: p.url, noScript: p.noScript === true, launch: p.launch === true });
+    };
+    ipcRenderer.on('outside-open', listener);
+    return () => ipcRenderer.removeListener('outside-open', listener);
+  },
+  outsideOpenReady: () => ipcRenderer.send('outside-open:ready'),
+  // ⋮ → Navegador padrão: o Bah é o padrão? / "Tornar o Bah padrão" (grava só no Bah instalado).
+  defaultBrowserStatus: () => ipcRenderer.invoke('default-browser:status'),
+  defaultBrowserMake: () => ipcRenderer.invoke('default-browser:make'),
   // Aba emitindo som → alto-falante na aba. Só o aviso do Chromium; nada de config de som.
   onTabAudio: (cb: (p: { wcId: number; audible: boolean }) => void) => {
     const listener = (_e: any, p: any) => cb(p);
     ipcRenderer.on('tab-audio', listener);
     return () => ipcRenderer.removeListener('tab-audio', listener);
   },
+  // Site pedindo câmera/microfone/localização…: o main pergunta pela tela e espera a resposta.
+  onSitePermissionAsk: (cb: (p: { id: string; wcId: number; origin: string; kinds: string[]; external?: string }) => void) => {
+    const listener = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('site-permission:ask', listener);
+    return () => ipcRenderer.removeListener('site-permission:ask', listener);
+  },
+  onSitePermissionCancel: (cb: (id: string) => void) => {
+    const listener = (_e: any, id: string) => cb(id);
+    ipcRenderer.on('site-permission:cancel', listener);
+    return () => ipcRenderer.removeListener('site-permission:cancel', listener);
+  },
+  answerSitePermission: (id: string, answer: 'allow' | 'block' | 'dismiss') => ipcRenderer.invoke('site-permission:answer', id, answer),
+  listSitePermissions: (url: string) => ipcRenderer.invoke('site-permission:list', url),
+  setSitePermission: (url: string, kind: string, value: 'allow' | 'block' | null) => ipcRenderer.invoke('site-permission:set', url, kind, value),
+  resetSitePermissions: (url: string) => ipcRenderer.invoke('site-permission:reset', url),
+  // Senhas salvas (main/password-manager.ts). A tela nunca recebe senha guardada nem cifrada: só o
+  // site, o usuário e o tamanho. Revelar/copiar a guardada passam pela confirmação do main.
+  passwords: ((): PasswordsBridge => {
+    const on = <T>(channel: string, cb: (p: T) => void) => {
+      const listener = (_e: unknown, p: T) => cb(p);
+      ipcRenderer.on(channel, listener);
+      return () => { ipcRenderer.removeListener(channel, listener); };
+    };
+    return {
+      state: () => ipcRenderer.invoke('passwords:state'),
+      onChanged: (cb) => on('passwords:changed', () => cb()),
+      onOffer: (cb) => on('passwords:offer', cb),
+      onOfferCancel: (cb) => on('passwords:offer-cancel', cb),
+      answerOffer: (id, answer, username) => ipcRenderer.invoke('passwords:offer-answer', id, answer, username),
+      revealOffer: (id) => ipcRenderer.invoke('passwords:offer-reveal', id),
+      onSuggest: (cb) => on('passwords:suggest', cb),
+      onSuggestHide: (cb) => on('passwords:suggest-hide', cb),
+      fill: (suggestId, entryId) => ipcRenderer.invoke('passwords:fill', suggestId, entryId),
+      setOfferToSave: (v) => ipcRenderer.invoke('passwords:set-offer', v),
+      reveal: (id) => ipcRenderer.invoke('passwords:reveal', id),
+      copy: (id, what) => ipcRenderer.invoke('passwords:copy', id, what),
+      update: (id, patch) => ipcRenderer.invoke('passwords:update', id, patch),
+      remove: (id) => ipcRenderer.invoke('passwords:delete', id),
+      removeNever: (origin) => ipcRenderer.invoke('passwords:never-remove', origin),
+      importCsv: () => ipcRenderer.invoke('passwords:import'),
+      exportCsv: () => ipcRenderer.invoke('passwords:export'),
+      lock: () => ipcRenderer.send('passwords:lock'),
+    };
+  })(),
+  // Extensões do Chrome: botões na barra (ícone, badge), clique, remover, loja, opções.
+  getExtensionsState: () => ipcRenderer.invoke('extensions:get-state'),
+  onExtensionsState: (cb: (list: any[]) => void) => {
+    const listener = (_e: any, list: any) => cb(list);
+    ipcRenderer.on('extensions:state', listener);
+    return () => ipcRenderer.removeListener('extensions:state', listener);
+  },
+  onExtensionOpenTab: (cb: (p: { reqId: number; url: string; active: boolean }) => void) => {
+    const listener = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('extensions:open-tab', listener);
+    // A tela já escuta: o main pode mandar os pedidos de aba que guardou enquanto ela subia.
+    ipcRenderer.invoke('extensions:renderer-ready').catch(() => {});
+    return () => ipcRenderer.removeListener('extensions:open-tab', listener);
+  },
+  // chrome.tabs.remove: o main pede pra fechar a aba deste webContents.
+  onExtensionCloseTab: (cb: (p: { wcId: number }) => void) => {
+    const listener = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('extensions:close-tab', listener);
+    return () => ipcRenderer.removeListener('extensions:close-tab', listener);
+  },
+  // Qual webContents nasceu pra um pedido de aba da extensão (chrome.tabs.create devolve ESSA aba).
+  extensionTabOpened: (reqId: number, wcId: number) => ipcRenderer.invoke('extensions:tab-opened', reqId, wcId),
+  extensionActionClick: (extId: string, wcId: number | null, anchor: { left: number; top: number; right: number; bottom: number }) =>
+    ipcRenderer.invoke('extensions:action-click', extId, wcId, anchor),
+  removeExtension: (extId: string) => ipcRenderer.invoke('extensions:remove', extId),
+  // Interruptor do quebra-cabeça: desligada = descarregada (arquivos e dados ficam).
+  setExtensionEnabled: (extId: string, enabled: boolean) => ipcRenderer.invoke('extensions:set-enabled', extId, enabled),
+  openExtensionStore: () => ipcRenderer.invoke('extensions:open-store'),
+  openExtensionOptions: (extId: string) => ipcRenderer.invoke('extensions:open-options', extId),
   // Real OS-level input
   realClick: (wcId: number, x: number, y: number, backendNodeId?: number) =>
     ipcRenderer.invoke('input:click', wcId, x, y, backendNodeId),
@@ -98,8 +194,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   frameClick: (wcId: number, key: string, id: number) => ipcRenderer.invoke('cdp:frame-click', wcId, key, id),
   frameFill: (wcId: number, key: string, id: number, value: string) => ipcRenderer.invoke('cdp:frame-fill', wcId, key, id, value),
   waitNetworkIdle: (wcId: number, idleMs: number, timeoutMs: number) => ipcRenderer.invoke('cdp:wait-network-idle', wcId, idleMs, timeoutMs),
-  savePdf: (wcId: number, name?: string) => ipcRenderer.invoke('page:save-pdf', wcId, name),
-  pageScreenshot: (wcId: number, full: boolean, name?: string) => ipcRenderer.invoke('page:screenshot', wcId, full, name),
+  savePdf: (wcId: number, name?: string) => ipcRenderer.invoke('agent:save-pdf', wcId, name),
+  pageScreenshot: (wcId: number, full: boolean, name?: string) => ipcRenderer.invoke('agent:screenshot', wcId, full, name),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
   clipboardWriteText: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),
   inspect: (wcId: number, target: any) => ipcRenderer.invoke('cdp:inspect', wcId, target),
@@ -144,16 +240,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   regionGet: (force?: boolean) => ipcRenderer.invoke('region:get', force),
   regionSet: (r: any) => ipcRenderer.invoke('region:set', r),
   onRegionChanged: (cb: () => void) => { const l = () => cb(); ipcRenderer.on('region:changed', l); return () => ipcRenderer.removeListener('region:changed', l); },
-  sitePermRespond: (id: number, choice: 'once' | 'always' | 'never' | 'dismiss' | 'auto-deny') => ipcRenderer.invoke('siteperm:respond', id, choice),
-  sitePermList: () => ipcRenderer.invoke('siteperm:list'),
-  sitePermReset: (origin: string, kind?: string) => ipcRenderer.invoke('siteperm:reset', origin, kind),
-  onSitePermEvent: (cb: (ev: { type: 'request' | 'cancel' | 'changed'; req?: any; id?: number }) => void) => {
-    const req = (_e: any, r: any) => cb({ type: 'request', req: r });
-    const cancel = (_e: any, id: number) => cb({ type: 'cancel', id });
-    const changed = () => cb({ type: 'changed' });
-    ipcRenderer.on('siteperm:request', req); ipcRenderer.on('siteperm:cancel', cancel); ipcRenderer.on('siteperm:changed', changed);
-    return () => { ipcRenderer.removeListener('siteperm:request', req); ipcRenderer.removeListener('siteperm:cancel', cancel); ipcRenderer.removeListener('siteperm:changed', changed); };
-  },
   skillsSave: (markdown: string) => ipcRenderer.invoke('skills:save', markdown),
   skillsOpenFolder: () => ipcRenderer.invoke('skills:open-folder'),
   selectOption: (wcId: number, backendNodeId: number, option: string) =>
@@ -217,7 +303,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   generateImage: (prompt: string, count?: number) => ipcRenderer.invoke('image:generate', prompt, count),
   revealInFolder: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
-  suggest: (q: string) => ipcRenderer.invoke('suggest:query', q),
+  suggest: (q: string, engine?: unknown) => ipcRenderer.invoke('suggest:query', q, engine),
+  // Mecanismo de pesquisa escolhido (⋮) → main, pro "Pesquisar no … por" do clique direito.
+  setSearchEngine: (setting: unknown, googleLocale: string) => ipcRenderer.send('search:set-engine', setting, googleLocale),
   appendDatasetRun: (run: unknown) => ipcRenderer.invoke('dataset:append-run', run),
   datasetInfo: () => ipcRenderer.invoke('dataset:info'),
   googleLogin: () => ipcRenderer.invoke('google:login'),
@@ -225,7 +313,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   siteLogin: (url: string) => ipcRenderer.invoke('site:login', url),
   googleCheckLogin: () => ipcRenderer.invoke('google:check-login'),
   clearGoogleCookies: () => ipcRenderer.invoke('cookies:clear-google'),
-  preconnect: (url: string) => ipcRenderer.invoke('net:preconnect', url),
+  preconnect: (url: string, incognito?: boolean) => ipcRenderer.invoke('net:preconnect', url, incognito === true),
+  // Aba anônima: zera a sessão anônima (a última aba anônima fechou) e avisa quando a IA trabalha numa.
+  incognitoWipe: () => ipcRenderer.invoke('incognito:wipe'),
+  setPrivateAi: (on: boolean) => ipcRenderer.send('incognito:private-ai', on === true),
   // Cron-Agent: monitores em background
   monitorsList: () => ipcRenderer.invoke('monitors:list'),
   monitorAdd: (data: { url: string; condition: string; intervalMin: number; notify?: Array<'trigger'|'change'|'error'> }) => ipcRenderer.invoke('monitors:add', data),
@@ -253,6 +344,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   dismissOverlays: (wcId: number) => ipcRenderer.invoke('overlays:dismiss', wcId),
   pickDocument: () => ipcRenderer.invoke('file:pick-extract'),
+  // Favoritos: importar (Chrome/Edge/arquivo HTML) e exportar pra HTML. O main só lê/grava arquivo.
+  bookmarksSources: () => ipcRenderer.invoke('bookmarks:sources'),
+  bookmarksImportBrowser: (id: string) => ipcRenderer.invoke('bookmarks:import-browser', id),
+  bookmarksImportHtml: () => ipcRenderer.invoke('bookmarks:import-html'),
+  bookmarksExport: (favs: Array<{ url: string; title: string }>) => ipcRenderer.invoke('bookmarks:export', favs),
+  // Ícones dos favoritos (cache do main, buscados no próprio site): pede vários de uma vez;
+  // os que ainda não tinha chegam depois pelo onFaviconsUpdated.
+  faviconsGet: (origins: string[], peek?: boolean) => ipcRenderer.invoke('favicons:get', origins, peek === true),
+  onFaviconsUpdated: (cb: (batch: Record<string, string | null>) => void) => {
+    const listener = (_e: unknown, batch: Record<string, string | null>) => cb(batch);
+    ipcRenderer.on('favicons:updated', listener);
+    return () => ipcRenderer.removeListener('favicons:updated', listener);
+  },
+  // Imprimir… / Salvar como PDF… da aba ativa (wcId = webContents do <webview>).
+  printPage: (wcId: number) => ipcRenderer.invoke('page:print', wcId),
+  savePagePdf: (wcId: number) => ipcRenderer.invoke('page:save-pdf', wcId),
+  // Limpar dados de navegação: caixas + período + sites do período. O main decide o que cada caixa apaga.
+  clearBrowsingData: (req: { range: string; cookies: boolean; cache: boolean; origins: string[] }) => ipcRenderer.invoke('browsing-data:clear', req),
   // Resolve o caminho real de um arquivo arrastado (File → path) no Electron 33.
   getPathForFile: (file: File) => { try { return webUtils.getPathForFile(file); } catch { return ''; } },
   stockMovers: (direction: string, count?: number) => ipcRenderer.invoke('stocks:movers', direction, count),

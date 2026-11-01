@@ -28,7 +28,7 @@ import {
 import { stripTrackingParams } from './tracking-params';
 import { PageAgent } from './page-agent';
 import { MonitorManager } from './monitor-manager';
-import { downloadVideo, resolveTopVideo, resolveTopVideos, resolveTopNVideos } from './media-downloader';
+import { downloadVideo, resolveTopVideo, resolveTopVideos, resolveTopNVideos, type VideoDownloadProgress } from './media-downloader';
 import { searchVideoCuts } from './video-cuts';
 import { fetchTranscript } from './transcript';
 import { fetchStockMovers, openDataView, type DataViewSpec } from './data-view';
@@ -41,17 +41,28 @@ import { decidePopup, decideAuthPopup } from './popup-shield';
 import { setupDownloadManager } from './download-manager';
 import { getDownloadDir, downloadRoots } from './download-dir';
 import { setupVideoButton } from './video-button';
+import { setupSitePermissions } from './site-permissions';
+import { setupPasswordManager } from './password-manager';
+import { isTaggedSecret } from './password-rules';
+import { makeDomainMatcher, siteOf } from './cookie-domain';
 import { setupHwMonitor } from './hw-monitor';
 import { setupTorrentManager } from './torrent-manager';
 import { setupSkills } from './skills-loader';
 import { setupProxy, proxyFor } from './proxy';
-import { setupSitePermissions } from './site-permissions';
 import { setupRegion, getTimezoneOverride } from './region';
 import { setupUpload, setUploadTextExtractor } from './upload';
 import { attachJsDialogs, setupJsDialogs } from './js-dialogs';
 import { setupFrames } from './frames';
 import { setupPageSave } from './page-save';
 import { loadSystemCAs, installCAs } from './system-ca';
+import { setupChromeExtensions } from './chrome-extensions';
+import { setupBookmarksIO } from './bookmarks-io';
+import { setupFaviconCache } from './favicon-cache';
+import { setupPagePrint } from './page-print';
+import { setupClearBrowsingData } from './clear-browsing-data';
+import { setupOutsideOpen, outsideRendererLoading, setupDefaultBrowser } from './default-browser';
+import { incognitoSession, isIncognitoWc, wipeIncognitoSession, setPrivateAi, isPrivateAi } from './incognito-session';
+import { normalizeSearchSetting, buildSearchUrl, buildSuggestUrl, parseSuggestResponse, engineName, selectionLabel, type SearchEngineSetting } from '../shared/search-engines';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
 
@@ -68,47 +79,210 @@ const MAIN_STRINGS: Record<'en' | 'pt' | 'es', Record<string, string>> = {
   en: {
     'ctx.copy': 'Copy', 'ctx.cut': 'Cut', 'ctx.paste': 'Paste', 'ctx.selectAll': 'Select all',
     'ctx.copyLink': 'Copy link address', 'ctx.reload': 'Reload', 'ctx.inspect': 'Inspect',
+    'ctx.searchFor': 'Search {engine} for “{text}”', 'ctx.openIncognito': 'Open link in incognito tab',
     'mnu.navigate': 'Navigate', 'mnu.newTab': 'New tab', 'mnu.closeTab': 'Close tab', 'mnu.reopenTab': 'Reopen tab',
+    'mnu.newIncognito': 'New incognito tab',
     'mnu.focusUrl': 'Focus address bar', 'mnu.reload': 'Reload', 'mnu.reloadF5': 'Reload (F5)',
     'mnu.back': 'Back', 'mnu.forward': 'Forward', 'mnu.bookmark': 'Add bookmark', 'mnu.find': 'Find in page',
     'mnu.zoomIn': 'Zoom in', 'mnu.zoomOut': 'Zoom out', 'mnu.zoomReset': 'Reset zoom', 'mnu.history': 'History', 'mnu.downloads': 'Downloads',
     'mnu.nextTab': 'Next tab', 'mnu.prevTab': 'Previous tab', 'mnu.tab': 'Tab',
+    'mnu.moveTabLeft': 'Move tab left', 'mnu.moveTabRight': 'Move tab right',
     'upd.title': 'Update available', 'upd.restart': 'Restart now', 'upd.later': 'Later',
     'upd.message': 'A new version ({v}) has been downloaded.',
     'upd.detail': 'Restart to finish updating. Your settings and login are kept.',
     'tray.open': 'Open Bah', 'tray.quit': 'Quit', 'tray.tooltip': 'Bah — monitors running',
+    'defbrowser.appDescription': 'Open-source AI browser',
+    'ext.install.title': 'Add extension', 'ext.install.question': 'Add "{name}"?', 'ext.install.can': 'It can:',
+    'ext.install.hosts': '• Read and change your data on {hosts}', 'ext.install.allSites': '• Read and change all your data on all websites',
+    'ext.install.unsupported': 'This extension uses features Bah does not have yet; it may not work fully ({list}).',
+    'ext.install.add': 'Add extension', 'ext.install.cancel': 'Cancel',
+    'ext.update.title': 'Extension wants more access', 'ext.update.question': '"{name}" now asks for more access',
+    'ext.update.can': 'Besides what you already approved, it can:', 'ext.update.perms': '• Use: {list}',
+    'ext.update.allow': 'Allow', 'ext.update.keepOff': 'Keep it off',
+    'ext.uninstall.title': 'Remove extension', 'ext.uninstall.question': 'Remove "{name}"?',
+    'ext.uninstall.detail': 'The Chrome Web Store asked to remove this extension and its data.', 'ext.uninstall.remove': 'Remove',
+    'ext.perm.proxy': '• Control your proxy settings (all traffic from your tabs can go through its server)',
+    'ext.perm.privacy': '• Change your privacy settings', 'ext.perm.cookies': '• Read and change cookies',
+    'ext.perm.management': '• Manage your extensions', 'ext.perm.notifications': '• Show notifications',
+    'ext.selfUninstall.detail': 'The extension asked to remove itself. Its data will be deleted too.',
+    'dl.noProxy.title': 'Download outside the proxy', 'dl.noProxy.message': 'This download will not go through the VPN or proxy your tabs use',
+    'dl.noProxy.detail': 'Video downloads (the Download button) and torrents connect straight from your computer: the site and the other peers will see your real IP address. Downloads from links in your tabs still go through the proxy.',
+    'dl.noProxy.continue': 'Download anyway', 'dl.noProxy.cancel': 'Cancel',
+    'dl.noProxy.refused': 'Not downloaded: torrents do not go through the VPN or proxy your tabs use.',
+    'bm.pick.title': 'Import from {browser}', 'bm.pick.message': 'Which {browser} profile do you want to import favorites from?',
+    'bm.pick.option': '{name} ({n} favorites)', 'bm.pick.optionOne': '{name} (1 favorite)', 'bm.pick.cancel': 'Cancel',
+    'bm.dlg.import': 'Import favorites from an HTML file', 'bm.dlg.export': 'Export favorites',
+    'bm.dlg.filter': 'Favorites file (HTML)', 'bm.dlg.all': 'All files',
+    'bm.export.title': 'Bookmarks', 'bm.export.toolbar': 'Bookmarks bar',
+    // Senhas salvas (password-manager.ts): confirmação, importar/exportar.
+    'pw.auth.title': 'Saved passwords', 'pw.auth.noUser': 'no username',
+    'pw.auth.show': 'Show the saved password for {user} on {site}?', 'pw.auth.copy': 'Copy the saved password for {user} on {site}?', 'pw.auth.edit': 'Edit the saved password for {user} on {site}?',
+    'pw.auth.detail': 'For the next minute Bah will not ask again, for this password only. Make sure nobody else is looking at your screen.',
+    'pw.auth.touchid.show': 'show the saved password for {user} on {site}', 'pw.auth.touchid.copy': 'copy the saved password for {user} on {site}',
+    'pw.auth.touchid.edit': 'edit the saved password for {user} on {site}', 'pw.auth.touchid.export': 'export all your saved passwords',
+    'pw.auth.ok': 'Continue', 'pw.cancel': 'Cancel',
+    'pw.export.title': 'Export passwords', 'pw.export.message': 'Export all your saved passwords to a file?',
+    'pw.export.detail': 'The file will have ALL your saved passwords in plain text, unprotected. Anyone who gets the file (or any program on this computer) can read them. Save it somewhere only you can reach and delete it as soon as you are done.',
+    'pw.export.go': 'Export', 'pw.export.dlg': 'Save passwords as a CSV file', 'pw.export.file': 'Bah Passwords.csv', 'pw.csv.filter': 'CSV file',
+    'pw.import.dlg': 'Import passwords from a CSV file', 'pw.import.title': 'Import passwords',
+    'pw.import.done': 'Imported: {added}. Already saved: {dup}. Kept the saved one (different password): {conflicts}. Skipped (not a website or incomplete): {invalid}.',
+    'pw.import.deleteCsv': 'Now delete the CSV file: it has your passwords in plain text, and anyone who opens it can read them.',
+    'pw.import.trash': 'Move the CSV to the trash', 'pw.import.keep': 'Keep the file',
+    'pw.import.none': 'No passwords found in this file. Use the CSV exported by Chrome, Edge or another password manager (columns url, username and password).',
+    'pw.import.tooBig': 'This file is too big for a password list (limit: 5 MB).',
+    'mnu.clearData': 'Clear browsing data…',
+    'mnu.print': 'Print…', 'pdf.dlg.title': 'Save as PDF', 'pdf.dlg.filter': 'PDF document', 'pdf.fallbackName': 'page',
+    'pdf.dlg.replace': '{name} already exists. Do you want to replace it?', 'pdf.dlg.replaceYes': 'Replace', 'pdf.dlg.replaceNo': 'Cancel',
   },
   pt: {
     'ctx.copy': 'Copiar', 'ctx.cut': 'Recortar', 'ctx.paste': 'Colar', 'ctx.selectAll': 'Selecionar tudo',
     'ctx.copyLink': 'Copiar endereço do link', 'ctx.reload': 'Recarregar', 'ctx.inspect': 'Inspecionar',
+    'ctx.searchFor': 'Pesquisar no {engine} por “{text}”', 'ctx.openIncognito': 'Abrir link em aba anônima',
     'mnu.navigate': 'Navegar', 'mnu.newTab': 'Nova aba', 'mnu.closeTab': 'Fechar aba', 'mnu.reopenTab': 'Reabrir aba',
+    'mnu.newIncognito': 'Nova aba anônima',
     'mnu.focusUrl': 'Focar endereço', 'mnu.reload': 'Recarregar', 'mnu.reloadF5': 'Recarregar (F5)',
     'mnu.back': 'Voltar', 'mnu.forward': 'Avançar', 'mnu.bookmark': 'Favoritar', 'mnu.find': 'Buscar na página',
     'mnu.zoomIn': 'Aumentar zoom', 'mnu.zoomOut': 'Diminuir zoom', 'mnu.zoomReset': 'Zoom normal', 'mnu.history': 'Histórico', 'mnu.downloads': 'Downloads',
     'mnu.nextTab': 'Próxima aba', 'mnu.prevTab': 'Aba anterior', 'mnu.tab': 'Aba',
+    'mnu.moveTabLeft': 'Mover aba para a esquerda', 'mnu.moveTabRight': 'Mover aba para a direita',
     'upd.title': 'Atualização disponível', 'upd.restart': 'Reiniciar agora', 'upd.later': 'Depois',
     'upd.message': 'Uma nova versão ({v}) foi baixada.',
     'upd.detail': 'Reinicie para concluir a atualização. Suas configurações e login são mantidos.',
     'tray.open': 'Abrir Bah', 'tray.quit': 'Sair', 'tray.tooltip': 'Bah — monitores rodando',
+    'defbrowser.appDescription': 'Navegador com IA, de código aberto',
+    'ext.install.title': 'Adicionar extensão', 'ext.install.question': 'Adicionar "{name}"?', 'ext.install.can': 'Ela pode:',
+    'ext.install.hosts': '• Ler e alterar seus dados em {hosts}', 'ext.install.allSites': '• Ler e alterar todos os seus dados em todos os sites',
+    'ext.install.unsupported': 'Esta extensão usa recursos que o Bah ainda não tem; ela pode não funcionar por completo ({list}).',
+    'ext.install.add': 'Adicionar extensão', 'ext.install.cancel': 'Cancelar',
+    'ext.update.title': 'A extensão pede mais acesso', 'ext.update.question': '"{name}" agora pede mais acesso',
+    'ext.update.can': 'Além do que você já aprovou, ela pode:', 'ext.update.perms': '• Usar: {list}',
+    'ext.update.allow': 'Permitir', 'ext.update.keepOff': 'Deixar desligada',
+    'ext.uninstall.title': 'Remover extensão', 'ext.uninstall.question': 'Remover "{name}"?',
+    'ext.uninstall.detail': 'A Chrome Web Store pediu para remover esta extensão e os dados dela.', 'ext.uninstall.remove': 'Remover',
+    'ext.perm.proxy': '• Controlar as configurações de proxy (todo o tráfego das abas pode passar pelo servidor dela)',
+    'ext.perm.privacy': '• Mudar configurações de privacidade', 'ext.perm.cookies': '• Ler e alterar cookies',
+    'ext.perm.management': '• Gerenciar suas extensões', 'ext.perm.notifications': '• Mostrar notificações',
+    'ext.selfUninstall.detail': 'A própria extensão pediu para ser removida. Os dados dela também serão apagados.',
+    'dl.noProxy.title': 'Download fora do proxy', 'dl.noProxy.message': 'Este download não vai passar pela VPN ou pelo proxy que as abas usam',
+    'dl.noProxy.detail': 'Os downloads de vídeo (o botão Baixar) e os torrents se conectam direto do seu computador: o site e os outros participantes vão ver o seu IP de verdade. Os downloads de links nas abas continuam passando pelo proxy.',
+    'dl.noProxy.continue': 'Baixar mesmo assim', 'dl.noProxy.cancel': 'Cancelar',
+    'dl.noProxy.refused': 'Não baixado: torrents não passam pela VPN ou pelo proxy que as abas usam.',
+    'bm.pick.title': 'Importar do {browser}', 'bm.pick.message': 'De qual perfil do {browser} você quer importar os favoritos?',
+    'bm.pick.option': '{name} ({n} favoritos)', 'bm.pick.optionOne': '{name} (1 favorito)', 'bm.pick.cancel': 'Cancelar',
+    'bm.dlg.import': 'Importar favoritos de um arquivo HTML', 'bm.dlg.export': 'Exportar favoritos',
+    'bm.dlg.filter': 'Arquivo de favoritos (HTML)', 'bm.dlg.all': 'Todos os arquivos',
+    'bm.export.title': 'Favoritos', 'bm.export.toolbar': 'Barra de favoritos',
+    // Senhas salvas (password-manager.ts): confirmação, importar/exportar.
+    'pw.auth.title': 'Senhas salvas', 'pw.auth.noUser': 'sem nome de usuário',
+    'pw.auth.show': 'Mostrar a senha salva de {user} em {site}?', 'pw.auth.copy': 'Copiar a senha salva de {user} em {site}?', 'pw.auth.edit': 'Editar a senha salva de {user} em {site}?',
+    'pw.auth.detail': 'No próximo minuto o Bah não pergunta de novo, só para esta senha. Confira se ninguém está olhando a sua tela.',
+    'pw.auth.touchid.show': 'mostrar a senha salva de {user} em {site}', 'pw.auth.touchid.copy': 'copiar a senha salva de {user} em {site}',
+    'pw.auth.touchid.edit': 'editar a senha salva de {user} em {site}', 'pw.auth.touchid.export': 'exportar todas as suas senhas salvas',
+    'pw.auth.ok': 'Continuar', 'pw.cancel': 'Cancelar',
+    'pw.export.title': 'Exportar senhas', 'pw.export.message': 'Exportar todas as suas senhas salvas para um arquivo?',
+    'pw.export.detail': 'O arquivo vai ter TODAS as suas senhas salvas em texto puro, sem proteção nenhuma. Qualquer pessoa que pegar o arquivo (ou qualquer programa deste computador) consegue ler. Salve num lugar só seu e apague assim que terminar.',
+    'pw.export.go': 'Exportar', 'pw.export.dlg': 'Salvar as senhas num arquivo CSV', 'pw.export.file': 'Senhas do Bah.csv', 'pw.csv.filter': 'Arquivo CSV',
+    'pw.import.dlg': 'Importar senhas de um arquivo CSV', 'pw.import.title': 'Importar senhas',
+    'pw.import.done': 'Importadas: {added}. Já estavam salvas: {dup}. Mantive a salva (senha diferente): {conflicts}. Puladas (não é site ou está incompleta): {invalid}.',
+    'pw.import.deleteCsv': 'Agora apague o arquivo CSV: ele tem as suas senhas em texto puro, e qualquer pessoa que abrir consegue ler.',
+    'pw.import.trash': 'Mandar o CSV para a Lixeira', 'pw.import.keep': 'Manter o arquivo',
+    'pw.import.none': 'Nenhuma senha encontrada neste arquivo. Use o CSV exportado pelo Chrome, pelo Edge ou por outro gerenciador de senhas (colunas url, username e password).',
+    'pw.import.tooBig': 'Este arquivo é grande demais para uma lista de senhas (limite: 5 MB).',
+    'mnu.clearData': 'Limpar dados de navegação…',
+    'mnu.print': 'Imprimir…', 'pdf.dlg.title': 'Salvar como PDF', 'pdf.dlg.filter': 'Documento PDF', 'pdf.fallbackName': 'pagina',
+    'pdf.dlg.replace': '{name} já existe. Deseja substituí-lo?', 'pdf.dlg.replaceYes': 'Substituir', 'pdf.dlg.replaceNo': 'Cancelar',
   },
   es: {
     'ctx.copy': 'Copiar', 'ctx.cut': 'Cortar', 'ctx.paste': 'Pegar', 'ctx.selectAll': 'Seleccionar todo',
     'ctx.copyLink': 'Copiar dirección del enlace', 'ctx.reload': 'Recargar', 'ctx.inspect': 'Inspeccionar',
+    'ctx.searchFor': 'Buscar “{text}” en {engine}', 'ctx.openIncognito': 'Abrir enlace en una pestaña de incógnito',
     'mnu.navigate': 'Navegar', 'mnu.newTab': 'Nueva pestaña', 'mnu.closeTab': 'Cerrar pestaña', 'mnu.reopenTab': 'Reabrir pestaña',
+    'mnu.newIncognito': 'Nueva pestaña de incógnito',
     'mnu.focusUrl': 'Enfocar la dirección', 'mnu.reload': 'Recargar', 'mnu.reloadF5': 'Recargar (F5)',
     'mnu.back': 'Atrás', 'mnu.forward': 'Adelante', 'mnu.bookmark': 'Añadir a favoritos', 'mnu.find': 'Buscar en la página',
     'mnu.zoomIn': 'Acercar', 'mnu.zoomOut': 'Alejar', 'mnu.zoomReset': 'Restablecer zoom', 'mnu.history': 'Historial', 'mnu.downloads': 'Descargas',
     'mnu.nextTab': 'Pestaña siguiente', 'mnu.prevTab': 'Pestaña anterior', 'mnu.tab': 'Pestaña',
+    'mnu.moveTabLeft': 'Mover pestaña a la izquierda', 'mnu.moveTabRight': 'Mover pestaña a la derecha',
     'upd.title': 'Actualización disponible', 'upd.restart': 'Reiniciar ahora', 'upd.later': 'Después',
     'upd.message': 'Se ha descargado una nueva versión ({v}).',
     'upd.detail': 'Reinicia para completar la actualización. Tus ajustes y sesión se mantienen.',
     'tray.open': 'Abrir Bah', 'tray.quit': 'Salir', 'tray.tooltip': 'Bah — monitores activos',
+    'defbrowser.appDescription': 'Navegador con IA, de código abierto',
+    'ext.install.title': 'Añadir extensión', 'ext.install.question': '¿Añadir "{name}"?', 'ext.install.can': 'Puede:',
+    'ext.install.hosts': '• Leer y cambiar tus datos en {hosts}', 'ext.install.allSites': '• Leer y cambiar todos tus datos en todos los sitios web',
+    'ext.install.unsupported': 'Esta extensión usa funciones que Bah todavía no tiene; puede que no funcione del todo ({list}).',
+    'ext.install.add': 'Añadir extensión', 'ext.install.cancel': 'Cancelar',
+    'ext.update.title': 'La extensión pide más acceso', 'ext.update.question': '"{name}" ahora pide más acceso',
+    'ext.update.can': 'Además de lo que ya aprobaste, puede:', 'ext.update.perms': '• Usar: {list}',
+    'ext.update.allow': 'Permitir', 'ext.update.keepOff': 'Dejarla desactivada',
+    'ext.uninstall.title': 'Quitar extensión', 'ext.uninstall.question': '¿Quitar "{name}"?',
+    'ext.uninstall.detail': 'Chrome Web Store pidió quitar esta extensión y sus datos.', 'ext.uninstall.remove': 'Quitar',
+    'ext.perm.proxy': '• Controlar la configuración de proxy (todo el tráfico de tus pestañas puede pasar por su servidor)',
+    'ext.perm.privacy': '• Cambiar la configuración de privacidad', 'ext.perm.cookies': '• Leer y cambiar cookies',
+    'ext.perm.management': '• Administrar tus extensiones', 'ext.perm.notifications': '• Mostrar notificaciones',
+    'ext.selfUninstall.detail': 'La propia extensión pidió que la quitaran. Sus datos también se borrarán.',
+    'dl.noProxy.title': 'Descarga fuera del proxy', 'dl.noProxy.message': 'Esta descarga no pasará por la VPN ni por el proxy que usan tus pestañas',
+    'dl.noProxy.detail': 'Las descargas de video (el botón Descargar) y los torrents se conectan directamente desde tu computadora: el sitio y los demás participantes verán tu IP real. Las descargas de enlaces en tus pestañas siguen pasando por el proxy.',
+    'dl.noProxy.continue': 'Descargar de todos modos', 'dl.noProxy.cancel': 'Cancelar',
+    'dl.noProxy.refused': 'No descargado: los torrents no pasan por la VPN ni por el proxy que usan tus pestañas.',
+    'bm.pick.title': 'Importar de {browser}', 'bm.pick.message': '¿De qué perfil de {browser} quieres importar los favoritos?',
+    'bm.pick.option': '{name} ({n} favoritos)', 'bm.pick.optionOne': '{name} (1 favorito)', 'bm.pick.cancel': 'Cancelar',
+    'bm.dlg.import': 'Importar favoritos de un archivo HTML', 'bm.dlg.export': 'Exportar favoritos',
+    'bm.dlg.filter': 'Archivo de favoritos (HTML)', 'bm.dlg.all': 'Todos los archivos',
+    'bm.export.title': 'Favoritos', 'bm.export.toolbar': 'Barra de favoritos',
+    // Senhas salvas (password-manager.ts): confirmação, importar/exportar.
+    'pw.auth.title': 'Contraseñas guardadas', 'pw.auth.noUser': 'sin nombre de usuario',
+    'pw.auth.show': '¿Mostrar la contraseña guardada de {user} en {site}?', 'pw.auth.copy': '¿Copiar la contraseña guardada de {user} en {site}?', 'pw.auth.edit': '¿Editar la contraseña guardada de {user} en {site}?',
+    'pw.auth.detail': 'Durante el próximo minuto, Bah no volverá a preguntar, solo para esta contraseña. Asegúrate de que nadie esté mirando tu pantalla.',
+    'pw.auth.touchid.show': 'mostrar la contraseña guardada de {user} en {site}', 'pw.auth.touchid.copy': 'copiar la contraseña guardada de {user} en {site}',
+    'pw.auth.touchid.edit': 'editar la contraseña guardada de {user} en {site}', 'pw.auth.touchid.export': 'exportar todas tus contraseñas guardadas',
+    'pw.auth.ok': 'Continuar', 'pw.cancel': 'Cancelar',
+    'pw.export.title': 'Exportar contraseñas', 'pw.export.message': '¿Exportar todas tus contraseñas guardadas a un archivo?',
+    'pw.export.detail': 'El archivo tendrá TODAS tus contraseñas guardadas en texto sin cifrar, sin ninguna protección. Cualquier persona que obtenga el archivo (o cualquier programa de este equipo) puede leerlas. Guárdalo en un lugar solo tuyo y bórralo en cuanto termines.',
+    'pw.export.go': 'Exportar', 'pw.export.dlg': 'Guardar las contraseñas en un archivo CSV', 'pw.export.file': 'Contraseñas de Bah.csv', 'pw.csv.filter': 'Archivo CSV',
+    'pw.import.dlg': 'Importar contraseñas de un archivo CSV', 'pw.import.title': 'Importar contraseñas',
+    'pw.import.done': 'Importadas: {added}. Ya estaban guardadas: {dup}. Se mantuvo la guardada (contraseña distinta): {conflicts}. Omitidas (no es un sitio web o está incompleta): {invalid}.',
+    'pw.import.deleteCsv': 'Ahora borra el archivo CSV: tiene tus contraseñas en texto sin cifrar y cualquiera que lo abra puede leerlas.',
+    'pw.import.trash': 'Enviar el CSV a la papelera', 'pw.import.keep': 'Conservar el archivo',
+    'pw.import.none': 'No se encontraron contraseñas en este archivo. Usa el CSV exportado por Chrome, Edge u otro gestor de contraseñas (columnas url, username y password).',
+    'pw.import.tooBig': 'Este archivo es demasiado grande para una lista de contraseñas (límite: 5 MB).',
+    'mnu.clearData': 'Borrar datos de navegación…',
+    'mnu.print': 'Imprimir…', 'pdf.dlg.title': 'Guardar como PDF', 'pdf.dlg.filter': 'Documento PDF', 'pdf.fallbackName': 'pagina',
+    'pdf.dlg.replace': '{name} ya existe. ¿Desea reemplazarlo?', 'pdf.dlg.replaceYes': 'Reemplazar', 'pdf.dlg.replaceNo': 'Cancelar',
   },
 };
+// O yt-dlp (botão Baixar do vídeo) e o torrent saem DIRETO do computador: não passam pelo proxy
+// da sessão das abas (VPN de extensão, proxy do sistema). Com proxy nas abas, pergunta UMA vez
+// por sessão do Bah; "Cancelar" vale por 30 s (sem pilha de avisos). false = não baixar.
+let directDownloadOk = false;
+let directAsk: Promise<boolean> | null = null;
+let directRefusedAt = 0;
+async function allowDirectDownload(url: string, canAsk: boolean): Promise<boolean> {
+  if (directDownloadOk) return true;
+  let route = '';
+  try { route = await session.fromPartition(BROWSER_PARTITION).resolveProxy(/^https?:\/\//i.test(url) ? url : 'https://example.com/'); } catch {}
+  if (route.trim().toUpperCase() === 'DIRECT') return true;
+  if (!canAsk || Date.now() - directRefusedAt < 30000) return false;
+  if (!directAsk) {
+    const opts: Electron.MessageBoxOptions = {
+      type: 'warning', title: mt('dl.noProxy.title'), message: mt('dl.noProxy.message'), detail: mt('dl.noProxy.detail'),
+      buttons: [mt('dl.noProxy.continue'), mt('dl.noProxy.cancel')], defaultId: 1, cancelId: 1, noLink: true,
+    };
+    const ask = mainWindow && !mainWindow.isDestroyed() ? dialog.showMessageBox(mainWindow, opts) : dialog.showMessageBox(opts);
+    directAsk = ask.then(r => r.response === 0, () => false).then(ok => {
+      if (ok) directDownloadOk = true; else directRefusedAt = Date.now();
+      directAsk = null;
+      return ok;
+    });
+  }
+  return directAsk;
+}
+
 function mt(key: string, vars?: Record<string, string>): string {
   const L = mainLang();
   let s = MAIN_STRINGS[L][key] || MAIN_STRINGS.en[key] || key;
-  if (vars) for (const k of Object.keys(vars)) s = s.replace(new RegExp(`\\{${k}\\}`, 'g'), vars[k]);
+  // Função no replace: texto vindo da página (seleção) com "$&"/"$1" não vira padrão.
+  if (vars) for (const k of Object.keys(vars)) s = s.replace(new RegExp(`\\{${k}\\}`, 'g'), () => vars[k]);
   return s;
 }
 
@@ -118,11 +292,19 @@ let pageAgent: PageAgent;
 let localEngine: AIEngine | null = null;
 let torrentManager: ReturnType<typeof setupTorrentManager> | null = null;
 let videoButton: ReturnType<typeof setupVideoButton> | null = null;
+let faviconCache: ReturnType<typeof setupFaviconCache> | null = null;
+// Senhas salvas: o main avisa quando a IA digita numa aba (o que ela digita nunca vira "Salvar senha?").
+let passwordManager: ReturnType<typeof setupPasswordManager> | null = null;
 let localPageAgent: PageAgent | null = null;
 // Espelho do modo IA Local do renderer (store.localSettings.enabled). O main precisa saber
 // pra trabalhos em BACKGROUND (monitores) respeitarem "local não vaza pra nuvem" — o chat
 // normal roteia por chamada, mas os monitores rodam sem o renderer decidir.
 let localModeOn = false;
+// Espelho do mecanismo de pesquisa escolhido no renderer (⋮ → Mecanismo de pesquisa; o dono é
+// o localStorage de lá). Só o "Pesquisar no … por" do clique direito usa — as sugestões da
+// barra recebem o mecanismo junto com cada pedido. Até o renderer avisar: Google.
+let searchEngine: SearchEngineSetting = normalizeSearchSetting(null);
+let searchGoogleLocale = 'hl=en';
 // Pré-aquecimento do modelo local é OPT-IN (o llama.cpp gerencia a VRAM; nunca descarregamos
 // nada). O renderer liga via IPC quando o usuário escolhe; o engine só aquece com a flag ligada.
 let localWarmupOn = false;
@@ -140,6 +322,7 @@ let monitorManager: MonitorManager | null = null;
 let tray: Tray | null = null;
 let minimizeToTray = false;   // fechar a janela manda pra bandeja em vez de sair (opção do usuário)
 let isQuitting = false;       // "Sair" de verdade (bandeja / before-quit) libera o fechamento
+let windowCreatedOnce = false;   // a janela do boot já nasceu (antes disso, link de fora só espera na fila)
 
 // Aquece DNS+TLS do provedor de IA ativo (pool keep-alive do fetch do Node) — a 1ª
 // mensagem deixa de pagar o handshake frio (~1-2s). Fire-and-forget, nunca quebra nada.
@@ -151,10 +334,12 @@ function warmAiConnection(): void {
   } catch {}
 }
 
+// Bandeja = 16 px: usa o logo já desenhado em 32 px (build/tray.png) — mais nítido que encolher o
+// PNG de 1024 na hora. Se faltar (instalação antiga), cai no ícone grande.
 function trayIconPath(): string {
-  return app.isPackaged
-    ? path.join(process.resourcesPath, 'icon.png')
-    : path.join(__dirname, '..', '..', 'build', 'icon.png');
+  const dir = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', '..', 'build');
+  const small = path.join(dir, 'tray.png');
+  return fs.existsSync(small) ? small : path.join(dir, 'icon.png');
 }
 function attachLocalMetrics(e: AIEngine | null): void {
   if (!e) return;
@@ -164,6 +349,13 @@ function attachLocalMetrics(e: AIEngine | null): void {
 function showMainWindow() {
   if (!mainWindow) { createWindow(); return; }
   try { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } catch {}
+}
+// Link de outro app com o Bah já aberto: traz a janela pra frente (inclusive da bandeja). Sem janela:
+// no Mac (fechou a janela, o app segue vivo) abre uma; no Windows isso só acontece fechando o Bah —
+// não ressuscita. Antes da janela do boot nascer, o link só espera na fila (default-browser.ts).
+function showForOutsideOpen(): void {
+  if (mainWindow) { showMainWindow(); return; }
+  if (process.platform === 'darwin' && windowCreatedOnce && !isQuitting && app.isReady()) createWindow();
 }
 function ensureTray() {
   if (tray) return;
@@ -223,6 +415,8 @@ const CH_BITNESS = process.arch === 'ia32' ? '32' : '64';
 const CHROME_UA = `Mozilla/5.0 (${UA_PLATFORM_TOKEN}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`;
 const BROWSER_PARTITION = 'persist:browser';
 const GOOGLE_LOGIN_PARTITION = 'persist:google-login';
+// Quanto silêncio antes de apagar o ícone de som da aba (pausa de fala não pisca o ícone).
+const AUDIO_OFF_DELAY_MS = 3000;
 
 // Shared ensureDebugger used by CDP handlers AND the hybrid pipeline
 // NOTE: only attaches + enables Accessibility — exactly as the original.
@@ -312,13 +506,33 @@ async function flushBrowserState(): Promise<void> {
   }));
 }
 
+// "Continuar de onde parou": ao fechar, a tela grava as abas abertas no localStorage (ela junta as
+// mudanças por até 1 s) ANTES do flushBrowserState mandar tudo pro disco — senão o último segundo
+// ficava de fora. Tela travada ou ainda sem ouvinte: segue o fechamento em 500 ms.
+function saveTabsBeforeClose(): Promise<void> {
+  const wc = mainWindow?.webContents;
+  if (!wc || wc.isDestroyed()) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer: NodeJS.Timeout | null = null;
+    const done = (e?: Electron.IpcMainEvent) => {
+      if (e && e.sender !== wc) return;
+      if (timer) { clearTimeout(timer); timer = null; }
+      ipcMain.removeListener('session:saved', done);
+      resolve();
+    };
+    ipcMain.on('session:saved', done);
+    timer = setTimeout(() => done(), 500);
+    try { wc.send('session:save-now'); } catch { done(); }
+  });
+}
+
 function isGoogleCookie(cookie: Electron.Cookie): boolean {
   const domain = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
-  return domain.endsWith('google.com') ||
-    domain.endsWith('google.com.br') ||
-    domain.endsWith('youtube.com') ||
-    domain.endsWith('googleusercontent.com') ||
-    domain.endsWith('gstatic.com');
+  // Com o ponto na frente: "fakegoogle.com" NÃO é do Google (era — e no login sincronizado
+  // esses cookies eram apagados/copiados junto).
+  const isOf = (site: string) => domain === site || domain.endsWith('.' + site);
+  return isOf('google.com') || isOf('google.com.br') || isOf('youtube.com') ||
+    isOf('googleusercontent.com') || isOf('gstatic.com');
 }
 
 function cookieUrl(cookie: Electron.Cookie): string | null {
@@ -705,14 +919,24 @@ async function copyAllCdpCookies(cdpCookies: any[], target: Electron.Session): P
   return copied;
 }
 
-// Casa cookies de um domínio-alvo: o próprio host, o registrable domain aproximado (eTLD+1
-// pelos 2 últimos rótulos) e seus subdomínios. Aproximação boa o bastante pra sites comuns.
-function makeDomainMatcher(host: string): (cookieDomain: string) => boolean {
-  const h = host.replace(/^www\./, '').toLowerCase();
-  const base = h.split('.').slice(-2).join('.');
-  return (cookieDomain: string) => {
-    const d = String(cookieDomain || '').replace(/^\./, '').toLowerCase();
-    return !!d && (d === h || d === base || d.endsWith('.' + base));
+// macOS: fechar a última janela NÃO encerra o Chrome (ele fica no Dock), então o 'exit'
+// nunca chega e o login ficava esperando o prazo inteiro (8 ou 5 min). Lá, "nenhuma aba
+// aberta" (depois de já ter tido alguma) conta como "fechou a janela". Fora do Mac: sempre
+// false — o Windows segue só pelo 'exit', como antes.
+function makeMacWindowClosedCheck(port: number): () => Promise<boolean> {
+  let sawPage = false;
+  let emptyPolls = 0;
+  return async () => {
+    if (process.platform !== 'darwin') return false;
+    try {
+      const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`, 1200);
+      const pages = (Array.isArray(targets) ? targets : []).filter((t: any) => t?.type === 'page').length;
+      if (pages > 0) { sawPage = true; emptyPolls = 0; return false; }
+      // Duas leituras seguidas sem aba: um instante vazio (troca de aba) não encerra o login.
+      return sawPage && ++emptyPolls >= 2;
+    } catch {
+      return false;   // porta morta = processo saiu → o 'exit' cuida
+    }
   };
 }
 
@@ -727,9 +951,9 @@ async function loginToSiteWithSystemBrowser(rawUrl: string): Promise<{ ok: boole
   let target: URL;
   try { target = new URL(rawUrl); } catch { return { ok: false, error: 'Invalid URL.' }; }
   if (!/^https?:$/.test(target.protocol)) return { ok: false, error: 'Open a normal website first (http/https).' };
-  const host = target.hostname.replace(/^www\./, '');
-  const base = host.split('.').slice(-2).join('.');
-  const domainMatches = makeDomainMatcher(host);
+  // Endereço inteiro (com "www."): em www.gov.br o site é www.gov.br, não todo .gov.br.
+  const base = siteOf(target.hostname);   // "mercadolivre.com.br", não "com.br" (cookie-domain.ts)
+  const domainMatches = makeDomainMatcher(target.hostname);
 
   const profileDir = path.join(app.getPath('userData'), 'system-login-profile');
   fs.mkdirSync(profileDir, { recursive: true });
@@ -779,11 +1003,13 @@ async function loginToSiteWithSystemBrowser(rawUrl: string): Promise<{ ok: boole
   //    fechar — por isso guardamos o snapshot em vez de tentar ler no fechamento.
   let lastMine: any[] = [];
   const deadline = Date.now() + 8 * 60_000;
+  const macWindowClosed = makeMacWindowClosedCheck(port);
   while (Date.now() < deadline && !exited) {
     try {
       const mine = (await getChromeDebugCookies(port)).filter(c => domainMatches(c.domain));
       if (mine.length) lastMine = mine;
     } catch {}
+    if (await macWindowClosed()) break;   // Mac: janela fechada, Chrome ainda vivo → fecha abaixo
     await sleepMs(2000);
   }
 
@@ -861,7 +1087,14 @@ async function loginWithSystemBrowser(opts?: { fresh?: boolean }): Promise<{ ok:
   //    quando alguma aba chegou no myaccount (o "continue" do loginUrl): sessão viva passa
   //    direto pra lá; sessão morta para no accounts.google.com e a janela fica esperando.
   const deadline = Date.now() + 5 * 60_000;
+  const macWindowClosed = makeMacWindowClosedCheck(port);
   while (Date.now() < deadline) {
+    if (!exited && await macWindowClosed()) {
+      // Mac: a janela fechou mas o Chrome segue aberto e segura o perfil — encerra de vez
+      // pra cair no MESMO caminho do Windows (importar do perfil) logo abaixo.
+      await closeLoginBrowser();
+      for (let i = 0; i < 25 && !exited; i++) await sleepMs(200);
+    }
     if (exited) {
       // usuário fechou a janela na mão → tenta importar do perfil por garantia
       const after = await importGoogleCookiesFromBrowserProfile(browser, profileDir);
@@ -931,13 +1164,16 @@ function createWindow(): void {
       nodeIntegration: false,
       webviewTag: true,
       v8CacheOptions: 'bypassHeatCheck',   // bytecode da UI compila 1x e reusa (boot mais rápido)
+      // Bah instalado: sem DevTools na PRÓPRIA tela (F12, Ctrl+Shift+I e "Inspecionar" abririam um console
+      // com o preload da tela — e com ele o cofre). As páginas das abas seguem com "Inspecionar".
+      devTools: !app.isPackaged,
     },
   });
 
   // Microfone PRA NOSSA UI (recurso de voz → Whisper local). Sem isto o getUserMedia
   // falha calado no Electron. Só a janela do app (confiável) ganha 'media'. Os SITES no
-  // <webview> usam outra sessão (persist:browser), com as permissões de site-permissions.ts
-  // (negado até a pessoa liberar).
+  // <webview> usam outra sessão (partition persist:browser), com as regras próprias de
+  // site-permissions.ts (o Bah pergunta antes de liberar câmera/microfone).
   mainWindow.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
     if (permission === 'media') return callback(wc === mainWindow?.webContents);
     callback(true);   // demais permissões da própria UI: mantém o permissivo de antes
@@ -945,7 +1181,15 @@ function createWindow(): void {
   mainWindow.webContents.session.setPermissionCheckHandler((wc, permission) =>
     permission === 'media' ? wc === mainWindow?.webContents : true);
 
+  // Links de outros apps (default-browser.ts) esperam a tela nova avisar que já escuta.
+  windowCreatedOnce = true;
+  outsideRendererLoading();
+  mainWindow.webContents.on('did-start-navigation', (d) => { if (d.isMainFrame && !d.isSameDocument) outsideRendererLoading(); });
+
   mainWindow.once('ready-to-show', () => { try { mainWindow?.show(); } catch {} });
+  // Rede de segurança: no 44.4.x o 'ready-to-show' às vezes não vinha e a janela nunca
+  // aparecia (corrigido no 44.5.1). Se em 5 s ainda estiver escondida, mostra assim mesmo.
+  setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) mainWindow.show(); } catch {} }, 5000);
 
   const rendererPath = path.join(__dirname, '..', 'renderer', 'index.html');
   const isDev = !app.isPackaged && !require('fs').existsSync(rendererPath);
@@ -971,6 +1215,7 @@ function createWindow(): void {
     if (cookiesFlushedOnClose) return;   // 2ª passada: deixa fechar de verdade
     e.preventDefault();
     (async () => {
+      try { await saveTabsBeforeClose(); } catch {}   // as abas abertas (Continuar de onde parou)
       try {
         await flushBrowserState();
       } catch {}
@@ -983,17 +1228,20 @@ function createWindow(): void {
     mainWindow = null;
   });
 
-  // F12 toggles DevTools
+  // F12 toggles DevTools (só no Bah de desenvolvimento — o instalado não tem DevTools na própria tela)
   mainWindow.webContents.on('before-input-event', (_e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') {
+    if (!app.isPackaged && input.type === 'keyDown' && input.key === 'F12') {
       mainWindow?.webContents.toggleDevTools();
     }
   });
 
   // Forward renderer console messages to main process logs (visible in terminal + file)
-  mainWindow.webContents.on('console-message', (_e, level, message) => {
+  mainWindow.webContents.on('console-message', (e: any) => {
+    const message: string = e?.message ?? '';   // 44: os argumentos soltos (level, message…) estão obsoletos
     if (message.startsWith('[Agent]') || message.startsWith('[DeepSeek]')) {
       console.log(`[renderer] ${message}`);
+      // IA numa aba anônima: os passos dela (endereços, o que digitou) não vão pro agent.log.
+      if (isPrivateAi()) return;
       try {
         const logPath = path.join(app.getPath('userData'), 'agent.log');
         fs.appendFileSync(logPath, `${new Date().toISOString()} ${message}\n`);
@@ -1010,14 +1258,29 @@ function createWindow(): void {
     attachJsDialogs(wc, () => mainWindow);   // alert/confirm/prompt: caixa do Bah ou política do agente (não a nativa que trava)
     // Identidade Chrome nativa (UA + client hints + userAgentData + idiomas) já na criação da aba.
     sharedEnsureDebugger(wc, wc.id).catch((e) => console.warn('[Identity] attach failed:', e?.message || e));
+    // Aba anônima (sessão só na memória, shared/incognito.ts): tudo igual, menos o que deixaria
+    // rastro — o ícone não entra no cache dos favoritos e o que ela abre nasce anônimo também.
+    const incognito = isIncognitoWc(wc);
     // Fundo ESCURO do webview antes da página pintar — mata o "flash branco" ao abrir aba/site novo
     // (a UI é escura; sem isto o Chromium pinta BRANCO até o 1º frame da página). Igual ao Chrome.
     try { (wc as any).setBackgroundColor('#262624'); } catch {}
     // Indicador de som na aba (igual ao Chrome). O Chromium avisa quando a aba passa a
-    // EMITIR áudio de verdade — vídeo mudo não conta, e mutar/pausar derruba na hora.
-    // Só avisa o renderer (que acha a aba dona pelo wcId); não mexe em som/autoplay.
+    // EMITIR áudio de verdade — vídeo mudo não conta. Só avisa o renderer (que acha a aba
+    // dona pelo wcId); não mexe em som/autoplay.
+    // O aviso cru liga/desliga a cada pausa da fala (o ícone piscava no YouTube). O Chrome
+    // segura o ícone uns segundos depois do silêncio; aqui também: acende na hora, apaga só
+    // se ficar AUDIO_OFF_DELAY_MS em silêncio.
+    let audioOn = false;
+    let audioOffTimer: NodeJS.Timeout | null = null;
+    const sendAudio = (audible: boolean) => {
+      if (audible === audioOn) return;
+      audioOn = audible;
+      mainWindow?.webContents.send('tab-audio', { wcId: wc.id, audible });
+    };
     wc.on('audio-state-changed', (e) => {
-      mainWindow?.webContents.send('tab-audio', { wcId: wc.id, audible: e.audible });
+      if (audioOffTimer) { clearTimeout(audioOffTimer); audioOffTimer = null; }
+      if (e.audible) sendAudio(true);
+      else audioOffTimer = setTimeout(() => { audioOffTimer = null; sendAudio(false); }, AUDIO_OFF_DELAY_MS);
     });
     // Diagnóstico (BAH_DEBUG_IDENTITY=1): registra no agent.log o que a página vê da identidade.
     if (process.env.BAH_DEBUG_IDENTITY === '1') {
@@ -1027,6 +1290,7 @@ function createWindow(): void {
           .catch(() => {});
       });
     }
+    wc.once('destroyed', () => { if (audioOffTimer) clearTimeout(audioOffTimer); });
     // Inject stealth script before each navigation to mask Electron/automation signals
     wc.on('dom-ready', () => {
       if (!/accounts\.google\.com|accounts-google\.com/i.test(wc.getURL())) {
@@ -1056,6 +1320,8 @@ function createWindow(): void {
     wc.on('did-frame-finish-load', (_e, isMainFrame, frameProcessId, frameRoutingId) => {
       if (!isMainFrame) videoButton?.injectFrame(wc, frameProcessId, frameRoutingId);
     });
+    // Ícone que a aba mostrou → cache dos ícones dos favoritos (só guarda se o site é favorito).
+    if (!incognito) wc.on('page-favicon-updated', (_e, favicons) => faviconCache?.notePageFavicons(wc.getURL(), favicons));
     attachContextMenu(wc);
     // Ctrl + roda do mouse = zoom (igual ao Chrome). O Chromium dispara 'zoom-changed'
     // com a direção quando o mouse está sobre a página; aplicamos no próprio webContents
@@ -1133,7 +1399,8 @@ function createWindow(): void {
       }
       recent.push(now);
       popupTimes.set(wc.id, recent);
-      mainWindow?.webContents.send('open-new-tab', stripTrackingParams(url));
+      // Popup de aba anônima vira aba anônima (nunca escapa pra sessão normal).
+      mainWindow?.webContents.send('open-new-tab', stripTrackingParams(url), incognito ? { incognito: true } : undefined);
       return { action: 'deny' };
     });
     // A janela de login NÃO é um <webview> e não passa por 'did-attach-webview' — nasce
@@ -1153,9 +1420,10 @@ function createWindow(): void {
         win.webContents.on('did-navigate', mostrarOrigem);
         attachContextMenu(win.webContents);
         win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-        // Só vale como login se a janela ficar na MESMA sessão das abas — é lá que o
-        // cookie precisa cair. Se divergir, o login "funciona" e não vale nada.
-        if (win.webContents.session !== session.fromPartition(BROWSER_PARTITION)) {
+        // Só vale como login se a janela ficar na MESMA sessão da aba que a abriu — é lá que o
+        // cookie precisa cair (a da aba anônima fica na sessão anônima, só na memória). Se
+        // divergir, o login "funciona" e não vale nada.
+        if (win.webContents.session !== wc.session) {
           console.warn('[Popup] janela de login em sessão divergente:', String(det?.url || '').slice(0, 80));
         }
         // Enquanto a janela de login viver, o bloqueador passa a decidir pelo host DELA.
@@ -1187,6 +1455,13 @@ function createWindow(): void {
           mainWindow?.webContents.send('safe-browsing-block', { url, host: u.hostname });
           return;
         }
+        // Página do computador aberta de fora, SEM JavaScript (default-browser-rules.ts): link pra um
+        // site abre numa aba normal — nesta, sem JavaScript, o site viria quebrado.
+        if (u.protocol !== 'file:' && (wc as any).getLastWebPreferences?.()?.javascript === false) {
+          e.preventDefault();
+          mainWindow?.webContents.send('open-new-tab', stripTrackingParams(url));
+          return;
+        }
         // Clique em link com rastreio (fbclid/gclid/…) → navega já na URL limpa.
         // Sem loop: loadURL é programático e não re-dispara will-navigate.
         const clean = stripTrackingParams(url);
@@ -1213,17 +1488,51 @@ function attachContextMenu(wc: Electron.WebContents): void {
       template.push({ label: mt('ctx.selectAll'), role: 'selectAll' });
     }
 
+    // "Pesquisar no Google por “…”" (como o Chrome) → aba nova, no mecanismo escolhido no ⋮.
+    // Só nas abas e na interface do Bah (a janela de login não tem barra de abas pra abrir).
+    const query = (params.selectionText || '').replace(/\s+/g, ' ').trim();
+    const inBah = !!mainWindow && !mainWindow.isDestroyed()
+      && (wc === mainWindow.webContents || wc.hostWebContents === mainWindow.webContents);
+    // Página de aba anônima: o que ela abre (pesquisa da seleção) nasce anônimo também.
+    const fromIncognito = isIncognitoWc(wc);
+    if (query && inBah) {
+      // No Windows o "&" do rótulo vira atalho sublinhado; "&&" mostra o "&" de verdade.
+      const amp = (x: string) => (process.platform === 'win32' ? x.replace(/&/g, '&&') : x);
+      template.push({
+        label: mt('ctx.searchFor', { engine: amp(engineName(searchEngine)), text: amp(selectionLabel(query)) }),
+        click: () => {
+          const url = buildSearchUrl(searchEngine, query, { googleLocale: searchGoogleLocale });
+          try { mainWindow?.webContents.send('open-new-tab', url, fromIncognito ? { incognito: true } : undefined); } catch {}
+        },
+      });
+    }
+
     if (params.linkURL) {
       if (template.length) template.push({ type: 'separator' });
+      // "Abrir link em aba anônima" (o Chrome abre numa janela anônima): só link de site, só nas
+      // abas e na interface do Bah (a janela de login não tem barra de abas).
+      if (/^https?:\/\//i.test(params.linkURL) && inBah) {
+        template.push({
+          label: mt('ctx.openIncognito'),
+          click: () => { try { mainWindow?.webContents.send('open-new-tab', stripTrackingParams(params.linkURL), { incognito: true }); } catch {} },
+        });
+      }
       template.push({
         label: mt('ctx.copyLink'),
-        click: () => clipboard.writeText(params.linkURL),
+        // 44: clipboard.writeText virou assíncrono (devolve Promise).
+        click: async () => { try { await clipboard.writeText(params.linkURL); } catch {} },
       });
     }
 
     if (template.length) template.push({ type: 'separator' });
     template.push({ label: mt('ctx.reload'), click: () => wc.reload() });
-    template.push({ label: mt('ctx.inspect'), click: () => wc.inspectElement(params.x, params.y) });
+    // Imprimir… só no fundo de uma ABA (como no Chrome) — nunca na interface do Bah nem na janela
+    // de login, pra nunca imprimir a página errada. O menu saiu da própria janela principal.
+    if (wc.getType() === 'webview' && wc.hostWebContents === mainWindow?.webContents && !hasSelection && !isEditable && !params.linkURL && params.mediaType === 'none') {
+      template.push({ label: mt('mnu.print'), accelerator: 'CmdOrCtrl+P', click: () => mainWindow?.webContents.send('app:shortcut', 'print') });
+    }
+    // Inspecionar: a página de uma aba sempre; a tela do próprio Bah, só no de desenvolvimento.
+    if (!app.isPackaged || wc !== mainWindow?.webContents) template.push({ label: mt('ctx.inspect'), click: () => wc.inspectElement(params.x, params.y) });
 
     Menu.buildFromTemplate(template).popup({ window: mainWindow ?? undefined });
   });
@@ -1283,37 +1592,61 @@ function setupIPC(): void {
     }
   });
   ipcMain.handle('window:close', () => mainWindow?.close());
+  // "Continuar de onde parou": a tela gravou uma sessão com aba/endereço/ordem diferente → manda o
+  // localStorage da interface pro disco já, sem esperar o lote do Chromium (que pode levar até um
+  // minuto): se o Bah cair, perde ~1 s. A tela pede no máximo 1x a cada 2 s (renderer/session.ts).
+  ipcMain.on('session:flush-storage', (e) => {
+    if (e.sender !== mainWindow?.webContents) return;
+    try { (session.defaultSession as any).flushStorageData?.(); } catch {}
+  });
 
-  // Sugestoes da barra de endereco (Google Suggest, estilo Chrome) — fetch no MAIN pra nao
-  // esbarrar em CORS. Sem chave. hl segue o idioma da UI. Offline/erro -> [] (cai so nas locais).
-  ipcMain.handle('suggest:query', async (_e, q: string) => {
+  // Sugestoes da barra de endereco (estilo Chrome), do mecanismo de pesquisa escolhido — fetch
+  // no MAIN pra nao esbarrar em CORS. Sem chave. hl segue o idioma. Offline/erro -> [] (cai so
+  // nas locais). O endereço sai SEMPRE da tabela fixa (shared/search-engines.ts): o renderer só
+  // diz qual mecanismo; Personalizado não tem sugestões (null → []).
+  ipcMain.handle('suggest:query', async (_e, q: string, engine?: unknown) => {
     try {
-      const query = (q || '').trim();
+      const query = (typeof q === 'string' ? q : '').trim();
       if (!query || /^https?:\/\//i.test(query)) return [];
+      const url = buildSuggestUrl(engine === undefined ? searchEngine : normalizeSearchSetting(engine), query, LANG_SWITCH);
+      if (!url) return [];
       const ctrl = new AbortController();
       const tm = setTimeout(() => ctrl.abort(), 3000);
-      const url = `https://suggestqueries.google.com/complete/search?client=firefox&hl=${encodeURIComponent(LANG_SWITCH)}&q=${encodeURIComponent(query)}`;
       const res = await fetch(url, { signal: ctrl.signal } as any).finally(() => clearTimeout(tm));
       if (!res.ok) return [];
-      const data = JSON.parse(await res.text());
-      return Array.isArray(data?.[1]) ? data[1].slice(0, 6).map((s: any) => String(s)) : [];
+      return parseSuggestResponse(JSON.parse(await res.text()), 6);
     } catch { return []; }
+  });
+  // O renderer avisa qual mecanismo está escolhido (ao abrir e a cada troca). Só a janela
+  // principal manda; o valor é revalidado aqui (Personalizado inválido = Google).
+  ipcMain.on('search:set-engine', (e, setting: unknown, googleLocale: unknown) => {
+    if (!mainWindow || e.sender !== mainWindow.webContents) return;
+    searchEngine = normalizeSearchSetting(setting);
+    if (typeof googleLocale === 'string' && /^[A-Za-z0-9=&-]{1,40}$/.test(googleLocale)) searchGoogleLocale = googleLocale;
   });
 
   // Cifra/decifra segredos (a chave de API) com o cofre do SO (safeStorage). A chave fica
   // em texto puro SÓ na memória; no disco (localStorage) vai cifrada. Fallback: texto puro
   // se o cofre não estiver disponível (ex.: Linux sem keyring) — nunca quebra o app.
   ipcMain.handle('secure:encrypt', (_e, t: string) => {
+    // Texto com a marca das senhas salvas (password-rules.ts): a tela não fabrica "senha cifrada".
+    if (isTaggedSecret(t)) return '';
     try {
       if (!t || !safeStorage.isEncryptionAvailable()) return t;
       return 'enc:' + safeStorage.encryptString(t).toString('base64');
     } catch { return t; }
   });
   ipcMain.on('secure:decrypt-sync', (e, t: string) => {
+    // Só a tela do Bah decifra: os preloads das abas (senhas, extensões) também falam com o main,
+    // e nada vindo de uma aba pode abrir o cofre do sistema por aqui.
+    if (!mainWindow || e.sender !== mainWindow.webContents) { e.returnValue = ''; return; }
     try {
-      e.returnValue = (typeof t === 'string' && t.startsWith('enc:'))
+      const plain = (typeof t === 'string' && t.startsWith('enc:'))
         ? safeStorage.decryptString(Buffer.from(t.slice(4), 'base64'))
         : t;
+      // Senha salva (o mesmo cofre, com a marca): este caminho NUNCA devolve — só o gerenciador de
+      // senhas abre, depois da confirmação (senão o DevTools leria o passwords.json e decifraria aqui).
+      e.returnValue = isTaggedSecret(plain) ? '' : plain;
     } catch { e.returnValue = t; }
   });
 
@@ -1985,6 +2318,7 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   ipcMain.handle('input:type', async (_e, wcId: number, text: string) => {
     const wc = webContents.fromId(wcId);
     if (!wc) return { success: false, error: 'webContents not found' };
+    passwordManager?.noteAgentInput(wcId);   // tecla da IA nunca vira "Salvar senha?"
     try {
       wc.focus();
       typingAbort = false;
@@ -2007,6 +2341,7 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
         if (/[\s.,!?;:]/.test(ch) && Math.random() < 0.35) d += rnd(120, 300);
         await sleepMs(d);
       }
+      passwordManager?.noteAgentInput(wcId);
       return { success: !typingAbort, aborted: typingAbort, info: { typed } };
     } catch (e: any) {
       return { success: false, error: String(e?.message ?? e) };
@@ -2077,6 +2412,7 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   ipcMain.handle('input:key', async (_e, wcId: number, key: string) => {
     const wc = webContents.fromId(wcId);
     if (!wc) return { success: false, error: 'webContents not found' };
+    passwordManager?.noteAgentInput(wcId);
     try {
       wc.focus();
       // Combinação "Meta+A", "Control+Shift+Tab": modificadores + a tecla final. Com Meta/Control não
@@ -2393,10 +2729,13 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
     }
   }
   setUploadTextExtractor(extractTextFromFile);   // read_file do agente (só pastas liberadas pela pessoa)
+  // 43+: sem defaultPath o diálogo abre SEMPRE em Downloads — lembramos a última pasta usada.
+  let lastDocDir: string | undefined;
   ipcMain.handle('file:pick-extract', async () => {
     if (process.env.E2E_DOC_PATH) return extractTextFromFile(process.env.E2E_DOC_PATH);   // test seam (no native dialog)
     const r = await dialog.showOpenDialog(mainWindow!, {
       title: 'Pick a document',
+      defaultPath: lastDocDir,
       properties: ['openFile'],
       filters: [
         { name: 'Documents', extensions: ['pdf', 'docx', 'md', 'markdown', 'txt', 'text', 'csv', 'tsv', 'json', 'log', 'xml', 'yaml', 'yml', 'ini', 'srt', 'vtt'] },
@@ -2404,6 +2743,7 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
       ],
     });
     if (r.canceled || !r.filePaths[0]) return null;
+    lastDocDir = path.dirname(r.filePaths[0]);
     return extractTextFromFile(r.filePaths[0]);
   });
 
@@ -2528,12 +2868,27 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
 
   // Preconnect preditivo (estilo Chrome): quando o autocomplete da barra completa um
   // domínio, abrimos o socket ANTES do Enter — a navegação já encontra a conexão pronta.
-  ipcMain.handle('net:preconnect', (_e, url: string) => {
+  // Aba anônima ativa: o socket abre na sessão anônima (nada de pista do site na sessão normal).
+  ipcMain.handle('net:preconnect', (_e, url: string, incognito?: boolean) => {
     try {
       if (!/^https?:\/\//i.test(url)) return false;
-      session.fromPartition(BROWSER_PARTITION).preconnect({ url, numSockets: 1 });
+      (incognito === true ? incognitoSession() : session.fromPartition(BROWSER_PARTITION)).preconnect({ url, numSockets: 1 });
       return true;
     } catch { return false; }
+  });
+
+  // ═══ Aba anônima ═══
+  // A última aba anônima fechou (o renderer decide: shared/incognito.ts): zera a sessão anônima.
+  // A próxima aba anônima espera isto terminar antes de nascer.
+  ipcMain.handle('incognito:wipe', async (e) => {
+    if (!mainWindow || e.sender !== mainWindow.webContents) return false;
+    await wipeIncognitoSession();
+    return true;
+  });
+  // A IA começou/terminou uma tarefa numa aba anônima (agent.log e tabelas de resultado ficam de fora).
+  ipcMain.on('incognito:private-ai', (e, on: unknown) => {
+    if (!mainWindow || e.sender !== mainWindow.webContents) return;
+    setPrivateAi(on === true);
   });
 
   // ═══ Cron-Agent: monitores em background ═══
@@ -2603,7 +2958,8 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
         return { success: false, error: 'Invalid spec (columns/rows required).' };
       }
       spec.rows = spec.rows.slice(0, 200);
-      return openDataView(spec);
+      // IA numa aba anônima: a tabela abre direto da memória (nada em userData/views).
+      return openDataView(spec, { inMemory: isPrivateAi() });
     } catch (e: any) {
       return { success: false, error: String(e?.message ?? e) };
     }
@@ -2696,9 +3052,12 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
     // FILA (lane 'download'): um download pesado por vez.
     return enqueueJob('download', async () => {
       try {
-        return await downloadVideo(url, { audioOnly: !!audioOnly, count: n, quality }, (p) => {
-          mainWindow?.webContents.send('agent:video-progress', p);
-        });
+        const onProgress = (p: VideoDownloadProgress) => { mainWindow?.webContents.send('agent:video-progress', p); };
+        const opts = { audioOnly: !!audioOnly, count: n, quality };
+        // Pelo botão de vídeo: o download da IA aparece na lista de Downloads (barra, ✕, ↻).
+        return videoButton
+          ? await videoButton.agentDownload(url, opts, onProgress)
+          : await downloadVideo(url, opts, onProgress);
       } catch (e: any) {
         return { success: false, error: String(e?.message ?? e) };
       }
@@ -2757,7 +3116,6 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
     uniqueDownloadPath,
     blockDuplicates: () => agentBusy,
     // O motor de várias conexões é Node puro (não usa o proxy): atrás de proxy, o Chromium baixa.
-    engineAllowed: async (url: string) => (await proxyFor(url)) === 'DIRECT',
     cancelExternal: (id) => {
       const w = agentDownloads.get(id);
       if (!w) return false;
@@ -2776,20 +3134,62 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   downloadManager.attach(session.defaultSession);
   // Skills de navegação (skills/*/SKILL.md) pro agente.
   setupSkills();
+  // Download de aba anônima também vai pro disco e pro painel (igual ao Chrome).
+  downloadManager.attach(incognitoSession());
   // Medidor do computador na barra de cima (CPU, RAM, placa de vídeo) — só mede quando ligado e visível.
   setupHwMonitor({ getMainWindow: () => mainWindow });
+  // Favoritos: importar do Chrome/Edge ou de arquivo HTML, exportar pra HTML (só arquivos; a lista é do renderer).
+  setupBookmarksIO({ getMainWindow: () => mainWindow, t: mt, lang: mainLang });
+  // Ícones dos favoritos: buscados no próprio site (sem Google/DuckDuckGo), cache em userData.
+  faviconCache = setupFaviconCache({
+    getMainWindow: () => mainWindow,
+    session: session.fromPartition(BROWSER_PARTITION),
+    file: path.join(app.getPath('userData'), 'favicons.json'),
+    userAgent: CHROME_UA,
+  });
+  // Imprimir… (Ctrl+P) e Salvar como PDF… (menu ⋮): sempre a página da aba ativa.
+  setupPagePrint({ getMainWindow: () => mainWindow, t: mt });
+  // Limpar dados de navegação (menu ⋮ / Ctrl+Shift+Delete): cookies/cache só da sessão das abas,
+  // sem tocar nas extensões nem nas configurações do Bah (defaultSession).
+  setupClearBrowsingData({
+    getMainWindow: () => mainWindow,
+    browserSession: session.fromPartition(BROWSER_PARTITION),
+    googleLoginSession: session.fromPartition(GOOGLE_LOGIN_PARTITION),
+    extensionsDir: path.join(app.getPath('userData'), 'Extensions'),
+  });
+  // Câmera, microfone, localização, notificações…: o site pede e o Bah PERGUNTA (igual ao
+  // Chrome). Sem isto o Electron liberava tudo sozinho nas abas.
+  setupSitePermissions({
+    getMainWindow: () => mainWindow,
+    sessions: [session.fromPartition(BROWSER_PARTITION), session.fromPartition(GOOGLE_LOGIN_PARTITION)],
+    // Aba anônima: pergunta toda vez e não guarda a resposta (só os "Bloquear" do perfil valem lá).
+    privateSessions: [incognitoSession()],
+  });
+  // Senhas salvas (o gerenciador de senhas do Chrome, só neste computador): pergunta "Salvar senha?"
+  // depois do login, preenche pela lista desenhada pelo Bah, ⋮ → Senhas. Cifradas pelo cofre do
+  // sistema (safeStorage); a aba anônima só preenche. A IA não tem caminho nenhum até aqui.
+  passwordManager = setupPasswordManager({
+    getMainWindow: () => mainWindow,
+    t: mt,
+    browserSession: session.fromPartition(BROWSER_PARTITION),
+    privateSession: incognitoSession(),
+  });
   // Botão "Baixar" em cima do vídeo do YouTube: escolhe a resolução e o download entra na
   // mesma lista de Downloads. Baixar exige clique de verdade recente naquela aba.
   videoButton = setupVideoButton({
     getMainWindow: () => mainWindow,
     msSinceGesture: (wcId) => Date.now() - (lastGesture.get(wcId) ?? -1e9),
+    allowDirect: allowDirectDownload,
   });
   // Estilo IDM: anota os vídeos/streams que as abas carregam (pros sites que o yt-dlp não conhece).
   videoButton.attachSniffer(session.fromPartition('persist:browser'));
+  videoButton.attachSniffer(incognitoSession());   // aba anônima também (a lista fica só na memória)
   // Torrent (magnet/.torrent) — motor isolado num utilityProcess; reusa Downloads.
   torrentManager = setupTorrentManager({
     getMainWindow: () => mainWindow,
     uniqueDownloadPath,
+    allowDirect: (uri) => allowDirectDownload(uri, true),
+    directRefused: () => mt('dl.noProxy.refused'),
   });
   // ═══ Ação `download` do agente — roda numa worker thread (agent-download-worker.ts) ═══
   // Devolve assim que o download COMEÇA (caminho final + tamanho) e segue em background. O
@@ -2875,13 +3275,26 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   ]);
   let userAdblockPref = loadAdblockPref();  // user toggle (baseline), persistido em disco
   let actuallyEnabled = userAdblockPref;    // current actual state (bate com setupAdblock)
-  const persistSession = session.fromPartition('persist:browser');
+  // As abas normais e as anônimas: o mesmo bloqueador, ligado/desligado junto (o bypass é pelo
+  // site da aba ativa, seja ela qual for).
+  const tabSessions = [session.fromPartition('persist:browser'), incognitoSession()];
+  // O @ghostery registra dois ipcMain.handle GLOBAIS a cada enableBlockingInSession: a 2ª sessão lançava
+  // "second handler" e o bloqueador inteiro não subia. Mesmo bloqueador → tira o handler e deixa
+  // a próxima sessão registrar de novo.
+  const enableIn = (ses: Electron.Session) => {
+    for (const ch of ['@ghostery/adblocker/inject-cosmetic-filters', '@ghostery/adblocker/is-mutation-observer-enabled']) { try { ipcMain.removeHandler(ch); } catch {} }
+    blocker!.enableBlockingInSession(ses);
+  };
 
   function applyAdblockState(targetEnabled: boolean) {
     if (!blocker) return;
     if (targetEnabled === actuallyEnabled) return;
-    if (targetEnabled) blocker.enableBlockingInSession(persistSession);
-    else blocker.disableBlockingInSession(persistSession);
+    for (const ses of tabSessions) {
+      try {
+        if (targetEnabled) enableIn(ses);
+        else if (blocker.isBlockingEnabled(ses)) blocker.disableBlockingInSession(ses);
+      } catch (e) { console.warn('[Adblock] liga/desliga falhou:', e); }
+    }
     actuallyEnabled = targetEnabled;
   }
 
@@ -2971,33 +3384,36 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
       const { captureViewport, screenshotFilename } = await import('./page-capture');
       const { runOCR } = await import('./ocr-engine');
       const taskId = `ocr_${Date.now()}`;
-      let imagePath: string;
+      // Aba anônima: o print nem passa pelo disco — o OCR lê direto da memória.
+      const inMemory = isIncognitoWc(webContents.fromId(wcId));
+      let imagePath: string | Buffer;
       const frame = splitDataUrl(frameDataUrl);
       if (frame && /^image\/(png|jpeg|webp)$/.test(frame.mime)) {
         // Same frame the model will see — OCR reads it off disk, no second capture.
-        imagePath = screenshotFilename(taskId, 'frame');
-        fs.writeFileSync(imagePath, Buffer.from(frame.base64, 'base64'));
+        const buf = Buffer.from(frame.base64, 'base64');
+        if (inMemory) imagePath = buf;
+        else { imagePath = screenshotFilename(taskId, 'frame'); fs.writeFileSync(imagePath, buf); }
       } else {
         // Print via CDP: com a janela do Bah coberta por outra, o Windows não desenha a página e
         // o Page.captureScreenshot espera pra sempre — o agente congelava inteiro (medido: 5 min
         // parado no passo 1 até a janela voltar pra frente). Com o limite, o passo segue sem OCR
         // (o catch abaixo já trata como não-fatal); se o print chegar depois, o PNG é apagado.
-        const captureP = captureViewport(wcId, sharedEnsureDebugger, taskId);
+        const captureP = captureViewport(wcId, sharedEnsureDebugger, taskId, { toDisk: !inMemory });
         const capture = await Promise.race([
           captureP,
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('OCR capture timed out (window not painted?)')), 8000)),
         ]).catch((e) => {
-          captureP.then((c) => { try { fs.unlinkSync(c.imagePath); } catch {} }, () => {});
+          captureP.then((c) => { if (c.imagePath) { try { fs.unlinkSync(c.imagePath); } catch {} } }, () => {});
           throw e;
         });
-        imagePath = capture.imagePath;
+        imagePath = inMemory ? Buffer.from(capture.base64, 'base64') : capture.imagePath;
       }
       let ocr;
       try {
         ocr = await runOCR(imagePath);
       } finally {
         // No image to cloud, no image left on disk — delete the temp PNG right away.
-        try { fs.unlinkSync(imagePath); } catch {}
+        if (typeof imagePath === 'string') { try { fs.unlinkSync(imagePath); } catch {} }
       }
 
       return {
@@ -3091,9 +3507,31 @@ async function setupAdblock(): Promise<void> {
       read: fs.promises.readFile,
       write: fs.promises.writeFile,
     });
+    // Páginas de extensão do Chrome (popup, opções) também rodam em persist:browser, e o
+    // preload do Ghostery mandaria os filtros cosméticos do EasyList pra elas (um ".ad-banner"
+    // da própria extensão sumia). No Chrome, um bloqueador nunca mexe na página de outra
+    // extensão. O BlockingContext chama blocker.onInjectCosmeticFilters na HORA de cada pedido,
+    // então embrulhar o método aqui vale pra todo liga/desliga do adblock. O endereço vem do
+    // frame visto pelo main, não do que a página informou.
+    {
+      const b = blocker;
+      const origInject = b.onInjectCosmeticFilters;
+      b.onInjectCosmeticFilters = async (event, url, msg) => {
+        let real = '';
+        try { real = String(event.senderFrame?.url || event.sender?.getURL?.() || url || ''); } catch { real = String(url || ''); }
+        if (real.startsWith('chrome-extension://')) return;
+        return origInject(event, url, msg);
+      };
+    }
     const persistSession = session.fromPartition('persist:browser');
-    // Respeita a preferência salva: só liga se o usuário não tiver desligado.
-    if (loadAdblockPref()) blocker.enableBlockingInSession(persistSession);
+    // Respeita a preferência salva: só liga se o usuário não tiver desligado. As abas anônimas
+    // (sessão só na memória) ganham o mesmo bloqueador.
+    if (loadAdblockPref()) {
+      for (const ses of [persistSession, incognitoSession()]) {
+        for (const ch of ['@ghostery/adblocker/inject-cosmetic-filters', '@ghostery/adblocker/is-mutation-observer-enabled']) { try { ipcMain.removeHandler(ch); } catch {} }   // ver enableIn
+        blocker.enableBlockingInSession(ses);
+      }
+    }
 
     console.log('[Adblock] Engine ready (EasyList + EasyPrivacy + cosmetic + cookie/annoyance lists)');
   } catch (e) {
@@ -3293,12 +3731,21 @@ const STEALTH_SCRIPT = `
     if (!window.chrome.loadTimes) window.chrome.loadTimes = function() { return { commitLoadTime: Date.now()/1000, finishDocumentLoadTime: Date.now()/1000, finishLoadTime: Date.now()/1000, firstPaintTime: Date.now()/1000, navigationType: 'Other', requestTime: Date.now()/1000-1, startLoadTime: Date.now()/1000, wasFetchedViaSpdy: true, wasNpnNegotiated: true, npnNegotiatedProtocol: 'h2', wasAlternateProtocolAvailable: false, connectionInfo: 'h2' }; };
     if (!window.chrome.app) window.chrome.app = { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' } };
 
-    // 5. Permissions API
+    // 5. Permissions API — o Bah só sabe responder "liberado/negado" (site-permissions.ts), e
+    //    diz "negado" pra o que a pessoa AINDA NÃO respondeu. Aqui esse "negado" vira "vai
+    //    perguntar" ('prompt'), como no Chrome — senão o site acha que foi bloqueado e nem pede.
+    //    (Bloqueado de verdade: o site pede e o Bah nega na hora.)
     const origQuery = navigator.permissions && navigator.permissions.query;
     if (origQuery) {
-      navigator.permissions.query = (params) => params && params.name === 'notifications'
-        ? Promise.resolve({ state: Notification.permission, onchange: null })
-        : origQuery.call(navigator.permissions, params);
+      const ASKABLE = { notifications: 1, geolocation: 1, camera: 1, microphone: 1, 'clipboard-read': 1, midi: 1, 'idle-detection': 1, 'window-management': 1 };
+      navigator.permissions.query = function (params) {
+        return origQuery.call(navigator.permissions, params).then((st) => {
+          if (st && st.state === 'denied' && params && ASKABLE[params.name]) {
+            try { Object.defineProperty(st, 'state', { get: () => 'prompt', configurable: true }); } catch {}
+          }
+          return st;
+        });
+      };
     }
 
     // 6. WebGL vendor — pretend to be a real GPU
@@ -3334,10 +3781,16 @@ const STEALTH_SCRIPT = `
       // Make sure HTMLIFrameElement.prototype.contentWindow is OK (real)
     } catch {}
 
-    // 10. Notification.permission — bot pages return 'denied' inconsistently
+    // 10. Notification.permission: 'granted' só quando a pessoa liberou de verdade; senão
+    //     'default' (o site pede e o Bah pergunta) — nunca o 'denied' que o Bah usa pra quem
+    //     ainda não respondeu. (Antes era SEMPRE 'default': um "Permitir" nunca aparecia pro site.)
     if (window.Notification) {
       try {
-        Object.defineProperty(Notification, 'permission', { get: () => 'default', configurable: true });
+        const realPerm = Object.getOwnPropertyDescriptor(Notification, 'permission');
+        Object.defineProperty(Notification, 'permission', {
+          get: () => { try { return realPerm && realPerm.get && realPerm.get.call(Notification) === 'granted' ? 'granted' : 'default'; } catch (e) { return 'default'; } },
+          configurable: true,
+        });
       } catch {}
     }
 
@@ -3404,6 +3857,11 @@ try {
   }
 } catch {}
 
+// Bah como navegador padrão: link/arquivo de outro app vira aba (default-browser.ts). No Bah
+// instalado, um só por perfil: a 2ª abertura entrega o pedido pro que já está aberto e sai aqui
+// mesmo — app.exit antes do 'ready' encerra na hora, sem janela nem 'before-quit' (medido).
+if (!setupOutsideOpen({ getMainWindow: () => mainWindow, showWindow: () => showForOutsideOpen() })) app.exit(0);
+
 // Flush periódico dos cookies (a cada 30s) — garante persistência mesmo se o app travar
 function startCookieFlushInterval() {
   setInterval(async () => {
@@ -3447,9 +3905,9 @@ function sweepOldScreenshots(): void {
 function setupAutoUpdater(): void {
   if (!app.isPackaged) return;
   // Só o Windows tem canal de atualização: a release "Latest" carrega o latest.yml que o
-  // electron-updater procura. Linux/macOS saem como pre-release manual e experimental, e
-  // pre-release nunca é a "Latest" — lá o updater só acha 404 e despeja um stack trace a
-  // cada boot. Quem usa AppImage/dmg troca de versão na mão, de propósito.
+  // electron-updater procura. O .dmg do Mac sobe na MESMA release (mac-release.yml), mas SEM
+  // latest-mac.yml — lá o updater só acharia 404 e despejaria um stack trace a cada boot. O
+  // Linux sai como pre-release de teste. Quem usa AppImage/dmg troca de versão na mão.
   if (process.platform !== 'win32') return;
   try {
     autoUpdater.autoDownload = true;
@@ -3483,7 +3941,6 @@ app.whenReady().then(async () => {
   // SO no Node. As requisições do próprio Bah (IA, buscas, sugestões) passam pelo MOTOR do navegador
   // (session.fetch): mesmo proxy, PAC, login e repositório de certificados das abas.
   setupProxy(() => mainWindow);
-  setupSitePermissions(() => mainWindow);
   setupRegion(applyTimezoneEverywhere, () => mainWindow);
   setupUpload(() => mainWindow, sharedEnsureDebugger);
   setupJsDialogs();
@@ -3522,6 +3979,10 @@ app.whenReady().then(async () => {
   session.defaultSession.setUserAgent(CHROME_UA);
   const persistSession = session.fromPartition('persist:browser');
   persistSession.setUserAgent(CHROME_UA);
+  // Abas anônimas: sessão só na memória (shared/incognito.ts), com a mesma cara de Chrome das
+  // normais (User-Agent, idioma e client hints abaixo). Criada já aqui, antes da 1ª aba anônima.
+  const privateSession = incognitoSession();
+  privateSession.setUserAgent(CHROME_UA);
   // NOTA sobre DRM: NÃO é preciso handler de 'protectedMediaIdentifier' aqui. Medido com
   // uma página de teste de EME: pedir `distinctiveIdentifier: required` falha com
   // NotSupportedError — mas falha IGUAL no Chrome de verdade (onde a Netflix funciona),
@@ -3573,6 +4034,7 @@ app.whenReady().then(async () => {
   };
   session.defaultSession.webRequest.onBeforeSendHeaders(filter, applyHeaders);
   persistSession.webRequest.onBeforeSendHeaders(filter, applyHeaders);
+  privateSession.webRequest.onBeforeSendHeaders(filter, applyHeaders);
 
   // Remove restrictive CSP headers so webview can load any site
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -3583,6 +4045,15 @@ app.whenReady().then(async () => {
     delete headers['X-Frame-Options'];
     callback({ responseHeaders: headers });
   });
+
+  // Extensões do Chrome (Chrome Web Store) na sessão das abas. Vem ANTES da janela: o calço
+  // das APIs (preload de service worker) precisa estar registrado antes do primeiro worker
+  // de extensão subir, e as extensões já carregam enquanto a janela nasce.
+  try {
+    setupChromeExtensions({ getMainWindow: () => mainWindow, session: persistSession, t: (k) => mt(k) });
+  } catch (e) {
+    console.error('[Extensões] não iniciou:', e);
+  }
 
   // Menu oculto (janela sem moldura) — os ACELERADORES funcionam mesmo com uma página
   // (webview) focada, então é o jeito certo de ter atalhos estilo Chrome. Cada item
@@ -3611,6 +4082,8 @@ app.whenReady().then(async () => {
       label: mt('mnu.navigate'),
       submenu: [
         { label: mt('mnu.newTab'), accelerator: 'CmdOrCtrl+T', click: () => sendSc('new-tab') },
+        // Nova aba anônima: o atalho do Chrome pra janela anônima (Ctrl+Shift+N / ⇧⌘N), com a página focada também.
+        { label: mt('mnu.newIncognito'), accelerator: 'CmdOrCtrl+Shift+N', click: () => sendSc('new-incognito-tab') },
         { label: mt('mnu.closeTab'), accelerator: 'CmdOrCtrl+W', click: () => sendSc('close-tab') },
         { label: mt('mnu.reopenTab'), accelerator: 'CmdOrCtrl+Shift+T', click: () => sendSc('reopen-tab') },
         { type: 'separator' },
@@ -3621,6 +4094,8 @@ app.whenReady().then(async () => {
         { label: mt('mnu.forward'), accelerator: 'Alt+Right', click: () => sendSc('forward') },
         { label: mt('mnu.bookmark'), accelerator: 'CmdOrCtrl+D', click: () => sendSc('bookmark') },
         { label: mt('mnu.find'), accelerator: 'CmdOrCtrl+F', click: () => sendSc('find') },
+        // Ctrl+P com o foco na página, na barra de endereço ou no painel da IA: sempre imprime a ABA.
+        { label: mt('mnu.print'), accelerator: 'CmdOrCtrl+P', click: () => sendSc('print') },
         { type: 'separator' },
         { label: mt('mnu.zoomIn'), accelerator: 'CmdOrCtrl+Plus', click: () => sendSc('zoom-in') },
         { label: mt('mnu.zoomIn'), accelerator: 'CmdOrCtrl+=', visible: false, click: () => sendSc('zoom-in') },
@@ -3628,12 +4103,19 @@ app.whenReady().then(async () => {
         { label: mt('mnu.zoomReset'), accelerator: 'CmdOrCtrl+0', click: () => sendSc('zoom-reset') },
         { label: mt('mnu.history'), accelerator: 'CmdOrCtrl+H', click: () => sendSc('history') },
         { label: mt('mnu.downloads'), accelerator: 'CmdOrCtrl+J', click: () => sendSc('downloads') },
+        // Limpar dados de navegação: o atalho do Chrome (Ctrl+Shift+Delete; no Mac, Cmd+Shift+Backspace,
+        // a tecla "delete" do teclado do Mac). Acelerador do menu → vale com o foco na página também.
+        { label: mt('mnu.clearData'), accelerator: process.platform === 'darwin' ? 'Cmd+Shift+Backspace' : 'Ctrl+Shift+Delete', click: () => sendSc('clear-data') },
         { type: 'separator' },
         { label: mt('mnu.nextTab'), accelerator: 'Control+Tab', click: () => sendSc('next-tab') },
         { label: mt('mnu.prevTab'), accelerator: 'Control+Shift+Tab', click: () => sendSc('prev-tab') },
+        // Mover a aba ativa uma casa (atalho do Chrome), com a página focada também.
+        { label: mt('mnu.moveTabLeft'), accelerator: 'Control+Shift+PageUp', click: () => sendSc('move-tab-left') },
+        { label: mt('mnu.moveTabRight'), accelerator: 'Control+Shift+PageDown', click: () => sendSc('move-tab-right') },
         ...tabNumberItems,
         { type: 'separator' },
-        { role: 'toggleDevTools' },
+        // DevTools da tela do Bah só no de desenvolvimento (no instalado, o atalho abriria o console da tela).
+        ...(app.isPackaged ? [] : [{ role: 'toggleDevTools' as const }]),
         { role: 'togglefullscreen' },
       ],
     },
@@ -3644,6 +4126,7 @@ app.whenReady().then(async () => {
 
   createWindow();
   setupIPC();
+  setupDefaultBrowser({ getMainWindow: () => mainWindow, t: (k) => mt(k) });
   startCookieFlushInterval();
   setupAutoUpdater();
 

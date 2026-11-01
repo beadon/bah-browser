@@ -23,6 +23,11 @@ interface Deps {
   getMainWindow: () => BrowserWindow | null;
   /** ms desde o último clique/tecla DE VERDADE naquela aba (trava contra script da página). */
   msSinceGesture: (wcId: number) => number;
+  /**
+   * O yt-dlp sai DIRETO do computador (não pelo proxy/VPN das abas). Com proxy na aba, o Bah
+   * avisa antes (canAsk = pode abrir o aviso agora). false = não baixar.
+   */
+  allowDirect?: (pageUrl: string, canAsk: boolean) => Promise<boolean>;
 }
 
 /** O vídeo que a página pediu, já conferido. */
@@ -368,10 +373,19 @@ export function setupVideoButton(deps: Deps) {
     const t = resolveTarget(msg, frameUrl);
     if (!t) return;
     const replyFrame = frame || wc.mainFrame;
+    // Aba com proxy: o aviso "sai sem a VPN" só abre com clique de verdade (página não abre sozinha).
+    const direct = async (): Promise<boolean> => {
+      if (!deps.allowDirect || await deps.allowDirect(t.pageUrl, false)) return true;
+      return (await hasGesture(wc, replyFrame)) && deps.allowDirect(t.pageUrl, true);
+    };
     if (msg.op === 'formats') {
-      getChoices(t, wc).then(c => callPage(replyFrame, 'onFormats', { v: t.key, ...presentable(c) }));
+      direct().then((ok) => ok
+        ? getChoices(t, wc).then(c => callPage(replyFrame, 'onFormats', { v: t.key, ...presentable(c) }))
+        : callPage(replyFrame, 'onFormats', { v: t.key, ok: false, live: false, drm: false })).catch(() => {});
     } else if (msg.op === 'download') {
-      hasGesture(wc, replyFrame).then((ok) => { if (ok) return startDownload(wc, replyFrame, t, String(msg.key || '')); }).catch(() => {});
+      hasGesture(wc, replyFrame).then(async (ok) => {
+        if (ok && await direct()) return startDownload(wc, replyFrame, t, String(msg.key || ''));
+      }).catch(() => {});
     } else if (msg.op === 'reveal') {
       hasGesture(wc, replyFrame).then((ok) => {
         if (!ok) return;
@@ -443,7 +457,95 @@ export function setupVideoButton(deps: Deps) {
     }
     return { ok: true, enabled };
   });
+  // ── Download pedido pela IA (ação download_video do chat) ──
+  // Antes só o chat sabia dele, e só no fim: a lista de Downloads ficava vazia, sem barra e
+  // sem ✕ enquanto baixava (issue #20). Agora entra na lista igual aos do botão "Baixar".
+  type AgentOpts = { audioOnly?: boolean; count?: number; quality?: 'best' | 'low' };
+  interface AgentJob { id: string; url: string; opts: AgentOpts; label: string; abort: AbortController; state: Job['state'] }
+  const agentJobs = new Map<string, AgentJob>();
+
+  // Nome provisório na lista (o de verdade chega no fim): a aba que tem esse link, a busca
+  // do "ytsearch" ou o site.
+  const agentLabel = (url: string, opts: AgentOpts): string => {
+    let name = '';
+    const search = /^ytsearch\d*:(.*)$/i.exec(url);
+    if (search) name = search[1].trim();
+    else {
+      const tab = tabs().find(w => w.getURL() === url);
+      name = (tab?.getTitle() || '').replace(/\s+-\s+YouTube$/i, '').trim();
+      if (!name) { try { name = new URL(url).hostname.replace(/^www\./, ''); } catch {} }
+    }
+    name = (name || 'video').slice(0, 120);
+    const n = Math.max(1, opts.count || 1);
+    return `${name}${n > 1 ? ` (${n})` : ''}.${opts.audioOnly ? 'mp3' : 'mp4'}`;
+  };
+
+  const runAgent = async (job: AgentJob, onProgress?: (p: VideoDownloadProgress) => void) => {
+    const { id } = job;
+    job.state = 'running';
+    toRenderer({ id, state: 'started', filename: job.label, url: isHttp(job.url) ? job.url : undefined, bytes: 0 });
+    const agg = new PartsProgress(0);
+    let lastRenderer = 0;
+    let r: Awaited<ReturnType<typeof downloadVideo>>;
+    try {
+      r = await downloadVideo(job.url, { ...job.opts, signal: job.abort.signal }, (p) => {
+        onProgress?.(p);
+        if (job.abort.signal.aborted) return;
+        if (p.state === 'downloading') {
+          agg.update(p.part || 'main', p.bytes, p.totalBytes);
+          const now = Date.now();
+          if (now - lastRenderer > 300) {
+            lastRenderer = now;
+            const s = agg.snapshot();
+            const eta = p.speedBps && p.speedBps > 0 ? Math.round((s.totalBytes - s.bytes) / p.speedBps) : undefined;
+            toRenderer({ id, state: 'progress', bytes: s.bytes, totalBytes: s.totalBytes, speedBps: p.speedBps, etaSec: eta });
+          }
+        } else if (p.state === 'merging') {
+          const s = agg.snapshot();
+          toRenderer({ id, state: 'progress', bytes: s.totalBytes, totalBytes: s.totalBytes, speedBps: 0 });
+        }
+      });
+    } catch (e: any) {
+      r = { success: false, error: String(e?.message ?? e) };
+    }
+    if (r.success && (r.path || r.paths?.length)) {
+      job.state = 'done';
+      // Várias músicas de uma vez: a 1ª fica nesta linha, as outras ganham linha própria.
+      const files = r.paths?.length ? r.paths : [r.path as string];
+      files.forEach((f, i) => {
+        let size = 0;
+        try { size = fs.statSync(f).size; } catch {}
+        toRenderer({ id: i === 0 ? id : `${id}_${i}`, state: 'completed', path: f, filename: path.basename(f), bytes: size, totalBytes: size, speedBps: 0 });
+      });
+      return r;
+    }
+    await removePartials(r.partials);
+    if (r.cancelled || job.abort.signal.aborted) {
+      job.state = 'cancelled';
+      toRenderer({ id, state: 'cancelled' });
+    } else {
+      job.state = 'failed';
+      toRenderer({ id, state: 'failed', reason: r.error });
+    }
+    return r;
+  };
+
+  /** A IA pediu um vídeo: baixa pelo yt-dlp e mostra na lista de Downloads (barra, ✕, ↻). */
+  const agentDownload = (url: string, opts: AgentOpts, onProgress?: (p: VideoDownloadProgress) => void) => {
+    const job: AgentJob = { id: `ag_${++seq}`, url, opts, label: agentLabel(url, opts), abort: new AbortController(), state: 'running' };
+    agentJobs.set(job.id, job);
+    return runAgent(job, onProgress);
+  };
+
   ipcMain.handle('media:cancel-video', (_e, id: string) => {
+    const agent = agentJobs.get(String(id));
+    if (agent) {
+      if (agent.state === 'running' && !agent.abort.signal.aborted) {
+        agent.abort.abort();
+        toRenderer({ id: agent.id, state: 'cancelled' });
+      }
+      return { ok: true };
+    }
     const job = jobs.get(String(id));
     if (job && job.state === 'running' && !job.abort.signal.aborted) {
       job.abort.abort();
@@ -454,6 +556,13 @@ export function setupVideoButton(deps: Deps) {
     return { ok: !!job };
   });
   ipcMain.handle('media:retry-video', (_e, id: string) => {
+    const agent = agentJobs.get(String(id));
+    if (agent) {
+      if (agent.state === 'running' || agent.state === 'done') return { ok: false };
+      agent.abort = new AbortController();
+      runAgent(agent).catch(() => {});
+      return { ok: true };
+    }
     const job = jobs.get(String(id));
     if (!job || job.state === 'running' || job.state === 'done') return { ok: false };
     job.abort = new AbortController();
@@ -462,5 +571,5 @@ export function setupVideoButton(deps: Deps) {
     return { ok: true };
   });
 
-  return { inject, injectFrame, onPageMessage, attachSniffer };
+  return { inject, injectFrame, onPageMessage, attachSniffer, agentDownload };
 }

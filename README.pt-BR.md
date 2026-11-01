@@ -73,11 +73,11 @@ Quer outro fluxo? O Bah pode **salvar o que funcionou como skill** — ver [CONT
 
 > ⚠️ O Windows mostra uma tela azul *"protegeu seu PC"* (o app ainda não tem assinatura digital paga). Clique em **Mais informações → Executar assim mesmo** — é normal em apps novos de código aberto. (As atualizações seguintes entram sem esse aviso.)
 
-**🍎 macOS:** na [mesma página de release](https://github.com/alexvilelabah/bah-browser/releases/latest), pegue o `Bah-*-arm64.dmg` (Apple Silicon: M1 em diante) ou o `Bah-*-x64.dmg` (Intel). Abra e arraste o **Bah** pra Aplicativos.
+**🍎 macOS (novo, a partir da v1.8.12):** na [mesma página de download](https://github.com/alexvilelabah/bah-browser/releases/latest), baixe o `Bah-*-arm64.dmg` se o seu Mac for Apple Silicon (M1 em diante) ou o `Bah-*-x64.dmg` se for Intel (dá pra ver no menu Apple → Sobre Este Mac). Abra o arquivo e arraste o **Bah** pra pasta Aplicativos. Precisa do macOS 13 (Ventura) ou mais novo.
 
-> ⚠️ O build de Mac ainda não é assinado nem notarizado pela Apple, então na 1ª abertura aparece que o Bah *"está danificado e não pode ser aberto"*. Rode `xattr -cr /Applications/Bah.app` no Terminal uma vez e depois abra o Bah normalmente. Ainda não há atualização automática no macOS: baixe o `.dmg` novo pra atualizar.
+> ⚠️ A versão de Mac é nova e ainda não tem assinatura nem notarização da Apple, então, na primeira vez que você abrir, o macOS geralmente diz que o Bah *"está danificado e não pode ser aberto"* — ele não está danificado, é só a falta da assinatura. Abra o Terminal, rode `xattr -cr /Applications/Bah.app` e depois abra o Bah normalmente. Ainda não tem atualização automática no Mac: pra atualizar, baixe o `.dmg` novo, substitua o app e rode o comando `xattr` de novo. Netflix, Prime Video e Disney+ ainda não tocam na versão de Mac.
 
-> 🍺 **Baixar vídeo/áudio no macOS precisa do [Homebrew](https://brew.sh):** `brew install yt-dlp deno ffmpeg` (ou `brew bundle` num clone deste repositório, com o [`Brewfile`](Brewfile)). O build de Mac não baixa programas sozinho; o Homebrew instala e atualiza. O resto do Bah funciona sem eles.
+> 🍺 **Baixar vídeo/áudio no macOS usa as ferramentas do [Homebrew](https://brew.sh):** `brew install yt-dlp deno ffmpeg` (ou `brew bundle` num clone deste repositório, com o [`Brewfile`](Brewfile)). O build de Mac não baixa nem roda programas sozinho (app sem assinatura rodando binário recém-baixado é o que o macOS mais desconfia); o Homebrew instala e atualiza. Sem o ffmpeg, só o download de áudio funciona, no formato original (geralmente M4A). O resto funciona sem eles.
 
 **👨‍💻 Quero mexer no código:** clone e rode — veja [Como rodar](#como-rodar) abaixo.
 
@@ -107,7 +107,7 @@ Quer outro fluxo? O Bah pode **salvar o que funcionou como skill** — ver [CONT
 
 | Camada | Tecnologia |
 |---|---|
-| Shell do navegador | **Electron 42** + Chromium |
+| Shell do navegador | **Electron 44** + Chromium |
 | UI | **React 19** + **TypeScript** + Vite |
 | IA (nuvem) | **DeepSeek** (recomendado) · **Mistral** · **NVIDIA NIM** |
 | IA (local) | **Ollama** |

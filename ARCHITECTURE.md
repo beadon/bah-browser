@@ -63,6 +63,7 @@ sites behave exactly as they would for a human.
 | `js-dialogs.ts` (+ `src/renderer/js-dialogs.ts`, `components/JsDialogHost.tsx`) | Page `alert`/`confirm` in tabs: replaces Electron's blocking native box (internal `-run-dialog`) with Bah's dialog for the user, and the agent policy on its tabs (armed `dialog` action > alert closes > ordinary confirm accepted > payment/delete confirm asks the user); `beforeunload` on agent tabs leaves when the agent navigates. `prompt()` is not available in Electron (it throws) |
 | `upload.ts` | Agent `upload` (OS file dialog → token; file field by node/label/position, or the OS picker intercepted with `Page.setInterceptFileChooserDialog` during the action; `DOM.setFileInputFiles`) and session folder grants for `list_files` / `read_file` / `upload { file }` (realpath-checked) |
 | `region.ts` (+ `src/shared/region.ts`, `src/renderer/region-state.ts`) | 🌍 Region & time: network exit country (Cloudflare trace, Auto mode only, 10-min cache), shopping region, time zone for sites via CDP `Emulation.setTimezoneOverride` (resets on restart unless kept); agent region line, search `gl=`/`cc=`, `suggest_time_zone` confirm card |
+| `proxy-base.ts` | Bridge between Bah's proxy settings and Chrome extensions' `chrome.proxy` (VPN extensions): an extension in control wins (as in Chrome); when it lets go, the tabs return to the proxy configured in Bah, not a fixed "system"; Bah's WebRTC leak policy is the extensions' baseline |
 | `system-ca.ts` | Reads the OS root certificate store and adds it to Node's default CAs (`tls.setDefaultCACertificates`) — main process and download worker — for TLS-inspecting corporate proxies |
 | `video-cuts.ts`, `transcript.ts` | Local video features (locate where a phrase is spoken, transcripts) — native ffmpeg |
 | `image-harvester.ts` | Bulk image download + AI image generation (Pollinations), with limits |
@@ -249,6 +250,8 @@ loader + `skills:list` IPC `src/main/skills-loader.ts` (re-reads files in dev; p
 ---
 
 ## Build & release
+
+> **E2E on macOS:** launch Electron with `--use-mock-keychain`. The password vault (`safeStorage`) otherwise opens a Keychain prompt for the unsigned dev build in a fresh test profile, and the synchronous call freezes the main process (Playwright then times out with no error).
 
 - **Build:** Renderer = Vite + `tsc` typecheck; Main = `tsc`. An i18n parity gate
   (`scripts/i18n-check.mjs`) **fails the build** if en/pt/es drift out of sync.

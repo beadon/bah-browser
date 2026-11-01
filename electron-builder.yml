@@ -5,11 +5,11 @@ afterPack: build/afterPack.js
 # o .exe (ícone/versão) depois do afterPack, e isso invalidava a assinatura.
 afterSign: build/afterSign.js
 # Usa o Electron que o npm JÁ baixou em node_modules, em vez de buscar no GitHub oficial.
-# Obrigatório porque rodamos o fork da castLabs (42.5.2+wvcus, com Widevine pra Netflix):
+# Obrigatório porque rodamos o fork da castLabs (44.5.1+wvcus, com Widevine pra Netflix):
 # essa versão não existe em github.com/electron/electron, e sem isto o build morre em 404.
 electronDist: node_modules/electron/dist
-# Os únicos módulos nativos (do webtorrent) são N-API com binários pré-compilados que já
-# carregam sob o Electron 42 (ABI-estável — provado). NÃO recompilar: evita exigir Visual
+# Os módulos nativos (webtorrent, e o @napi-rs/canvas do pdf-parse) são N-API com binários
+# pré-compilados que carregam sob o Electron 44 sem recompilar (ABI-estável). NÃO recompilar: evita exigir Visual
 # Studio/node-gyp no build. Seguro porque o resto das deps pesadas do Bah é WASM (sem .node).
 npmRebuild: false
 publish:
@@ -25,10 +25,13 @@ files:
   # Skills de navegação do agente (lidas em runtime por src/main/skills-loader.ts).
   - skills/**/*
 # Ícone acessível em runtime (bandeja do sistema) — o exe embute o ícone, mas o Tray
-# precisa de um arquivo em disco. Vai pra resources/icon.png no app empacotado.
+# precisa de um arquivo em disco. Vai pra resources/ no app empacotado. tray.png é o logo já
+# desenhado em 32 px (fica mais nítido que encolher o PNG de 1024 na hora).
 extraResources:
   - from: build/icon.png
     to: icon.png
+  - from: build/tray.png
+    to: tray.png
   # OCR offline: sem isso o tesseract.js baixa do CDN na primeira OCR. langPath aponta pra ca.
   - from: eng.traineddata
     to: tessdata/eng.traineddata
@@ -62,6 +65,19 @@ mac:
   target:
     - dmg
   icon: build/icon.png
+  # Electron 44 não roda mais no macOS 12 (Monterey).
+  minimumSystemVersion: "13.0"
+  # Navegador padrão (⋮ → Navegador padrão): o macOS só lista como navegador o app que declara os
+  # links http/https e as páginas .html. Só no Mac — no Windows quem registra é o próprio Bah, no
+  # clique (nada de associação de arquivo no instalador NSIS).
+  protocols:
+    - name: Web
+      schemes: [http, https]
+      role: Viewer
+  fileAssociations:
+    - ext: [html, htm, xhtml]
+      name: HTML Document
+      role: Viewer
 # Arquitetura SEMPRE no nome (o padrão do electron-builder omite o "x64"), pra Apple Silicon
 # e Intel não colidirem quando os dois .dmg sobem pra mesma release.
 dmg:

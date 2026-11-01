@@ -19,8 +19,6 @@ interface Deps {
   uniqueDownloadPath: (base: string) => string;
   /** true = outro dono assumiu este download (ex.: .torrent com o cliente embutido ligado). */
   interceptDownload?: (url: string, filename: string) => boolean;
-  /** false = não usar o motor Node de várias conexões pra esta URL (ex.: atrás de proxy). */
-  engineAllowed?: (url: string) => Promise<boolean>;
   /** true = agente trabalhando: um 2º download do MESMO arquivo/URL ainda baixando é recusado. */
   blockDuplicates?: () => boolean;
   /** Cancela um download que não é deste gerenciador (ex.: ação `download` do agente). */
@@ -145,6 +143,10 @@ export function setupDownloadManager(deps: Deps) {
   // ── Motor de várias conexões ──
   // Downloads devolvidos pelo motor reaparecem no Chromium com o MESMO id (mesma linha).
   const reuseIds = new Map<string, string>();
+  // De qual sessão veio cada download (sobrevive ao fim dele): o "tentar de novo" volta pela
+  // MESMA sessão — o de aba anônima pela anônima, nunca com os cookies do perfil normal.
+  const originOf = new Map<string, Electron.Session>();
+  const MAX_ORIGINS = 300;
   const sessions: Electron.Session[] = [];
 
   const engineEmit = (job: EngineJob) => {
@@ -167,14 +169,15 @@ export function setupDownloadManager(deps: Deps) {
     job.dl.start().then(() => {
       if (job.timer) { clearInterval(job.timer); job.timer = null; }
       const st = job.dl.state;
-      if (st === 'failed' && job.dl.snapshot().done === 0 && sessions[0]) {
+      const back = originOf.get(job.id) || sessions[0];   // pela sessão de onde veio (anônima → anônima)
+      if (st === 'failed' && job.dl.snapshot().done === 0 && back) {
         // Motor não conseguiu nem começar (cookie/servidor chato): devolve pro Chromium,
         // na mesma linha, e ele baixa do jeito de sempre.
         engineJobs.delete(job.id);
         reuseIds.set(job.url, job.id);
         bypass.add(job.url);
         try { fs.unlinkSync(partPathFor(job.dl.target)); } catch {}
-        try { sessions[0].downloadURL(job.url); return; } catch {}
+        try { back.downloadURL(job.url); return; } catch {}
       }
       engineEmit(job);
       if (st !== 'paused') engineJobs.delete(job.id);
@@ -187,7 +190,13 @@ export function setupDownloadManager(deps: Deps) {
     try { chain = t.item.getURLChain(); } catch {}
     // O Chromium já seguiu os redirecionamentos: usa o endereço FINAL, com os cookies DELE.
     const finalUrl = chain[chain.length - 1] || t.url;
-    if (deps.engineAllowed && !(await deps.engineAllowed(finalUrl).catch(() => true))) {
+    // Aba com proxy (VPN de extensão, proxy do sistema): o motor usa o fetch do Node, que NÃO
+    // passa pelo proxy da sessão — sairia com o IP de verdade E os cookies da aba. Nesse caso
+    // (ou se não deu pra saber) devolve pro Chromium, que baixa pelo proxy. Antes de ler cookie.
+    let route = '';
+    try { route = await sess.resolveProxy(finalUrl); } catch {}
+    if (!reg.has(t.id)) return;   // a pessoa cancelou enquanto isso
+    if (route.trim().toUpperCase() !== 'DIRECT') {
       t.probing = false;
       try { t.item.resume(); } catch {}
       return;
@@ -251,6 +260,8 @@ export function setupDownloadManager(deps: Deps) {
       const now = Date.now();
       const willQueue = activeCount() >= MAX_CONCURRENT;
       const t: Tracked = { id, item, url, filename: path.basename(target), path: target, lastBytes: 0, lastTime: now, speedBps: 0, lastEmit: 0, queued: willQueue };
+      originOf.set(id, sess);
+      if (originOf.size > MAX_ORIGINS) originOf.delete(originOf.keys().next().value as string);
       reg.set(id, t);
       if (willQueue) { try { item.pause(); } catch {} }
       send({ id, state: willQueue ? 'queued' : 'started', filename: t.filename, path: target, totalBytes: item.getTotalBytes(), url, paused: willQueue });
@@ -387,12 +398,14 @@ export function setupDownloadManager(deps: Deps) {
     return { ok: !!t };
   });
   // Retry: re-dispara o download pela sessão das ABAS (com os cookies delas) — re-aciona o
-  // will-download, que decide de novo entre o motor de várias conexões e o Chromium.
+  // will-download, que decide de novo entre o motor de várias conexões e o Chromium. Download de
+  // aba anônima tenta de novo pela sessão anônima (nunca com os cookies do perfil normal).
   ipcMain.handle('download:retry', (_e, id: string, url?: string) => {
     const u = url || reg.get(id)?.url;
     if (!u) return { ok: false };
     try {
-      if (sessions[0]) sessions[0].downloadURL(u);
+      const via = originOf.get(id) || sessions[0];
+      if (via) via.downloadURL(u);
       else deps.getMainWindow()?.webContents.downloadURL(u);
       return { ok: true };
     } catch (e: any) { return { ok: false, error: String(e?.message || e) }; }

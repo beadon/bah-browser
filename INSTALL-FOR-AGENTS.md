@@ -77,11 +77,12 @@ git clone https://github.com/alexvilelabah/bah-browser.git      # or the fork/br
 cd bah-browser
 # git checkout <branch>                                          # if the user asked for a branch
 npm install
+node node_modules/electron/install.js   # fetches the castLabs Electron binary (npm 11 may hold install scripts back)
 npm run build
 npm start                                                        # or: npx electron .
 ```
 
-**Check:** `npm run build` ends with `✓ built in …` and no `error`; `npm start` opens the window.
+**Check:** `node_modules/electron/dist/` exists (macOS: `Electron.app`), `npm run build` ends with `✓ built in …` and no `error`; `npm start` opens the window.
 Optional: `npm run test:unit` should report `fail 0`.
 
 macOS: for video/audio downloads, `brew bundle` in the repo installs the tools from `Brewfile`.

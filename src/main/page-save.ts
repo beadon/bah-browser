@@ -13,7 +13,7 @@ function uniquePath(dir: string, base: string, ext: string): string {
 }
 
 export function setupPageSave(ensureDebugger: (wc: Electron.WebContents, id: number) => Promise<void>): void {
-  ipcMain.handle('page:save-pdf', async (_e, wcId: number, name?: string) => {
+  ipcMain.handle('agent:save-pdf', async (_e, wcId: number, name?: string) => {
     const wc = webContents.fromId(wcId);
     if (!wc) return { success: false, error: 'tab not found' };
     try {
@@ -24,7 +24,7 @@ export function setupPageSave(ensureDebugger: (wc: Electron.WebContents, id: num
     } catch (e: any) { return { success: false, error: String(e?.message || e) }; }
   });
 
-  ipcMain.handle('page:screenshot', async (_e, wcId: number, full: boolean, name?: string) => {
+  ipcMain.handle('agent:screenshot', async (_e, wcId: number, full: boolean, name?: string) => {
     const wc = webContents.fromId(wcId);
     if (!wc) return { success: false, error: 'tab not found' };
     try {
@@ -45,6 +45,6 @@ export function setupPageSave(ensureDebugger: (wc: Electron.WebContents, id: num
   });
 
   // Ler só depois da permissão (o renderer pergunta). Escrever é livre (é o agente entregando um resultado).
-  ipcMain.handle('clipboard:read-text', () => clipboard.readText().slice(0, 4000));
+  ipcMain.handle('clipboard:read-text', async () => String(await clipboard.readText()).slice(0, 4000));   // Electron 44+: readText é assíncrono
   ipcMain.handle('clipboard:write-text', (_e, text: string) => { clipboard.writeText(String(text ?? '')); return { success: true, info: { chars: String(text ?? '').length } }; });
 }

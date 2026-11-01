@@ -77,11 +77,11 @@ Want another workflow? Bah can **save what worked as a skill** — see [CONTRIBU
 
 > 🛡️ **Windows blocks Bah and there's no "Run anyway" button?** If the installer — or an update — simply refuses to open, your PC has **Smart App Control** turned on. It's a stricter Windows 11 protection that blocks every app without a digital signature, and Microsoft offers [no way to allow a single app](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions). Until Bah is code-signed, the only option is to turn it off: **Windows Security → App & browser control → Smart App Control settings → Off**. Your antivirus (Microsoft Defender) keeps running, new apps still get the usual *"protected your PC"* check, and recent Windows updates let you turn Smart App Control back on later without reinstalling Windows.
 
-**🍎 macOS:** from the [same release page](https://github.com/alexvilelabah/bah-browser/releases/latest), get `Bah-*-arm64.dmg` (Apple Silicon: M1 and newer) or `Bah-*-x64.dmg` (Intel). Open it and drag **Bah** into Applications.
+**🍎 macOS (new, starting with v1.8.12):** from the [same release page](https://github.com/alexvilelabah/bah-browser/releases/latest), get `Bah-*-arm64.dmg` (Apple Silicon: M1 and newer) or `Bah-*-x64.dmg` (Intel; check Apple menu → About This Mac). Open it and drag **Bah** into Applications. Needs macOS 13 (Ventura) or newer.
 
-> ⚠️ The Mac build isn't signed or notarized by Apple yet, so the first launch says Bah *"is damaged and can't be opened"*. Run `xattr -cr /Applications/Bah.app` in Terminal once, then open Bah normally. There's no auto-update on macOS yet: download the new `.dmg` to update.
+> ⚠️ The Mac version is new and isn't signed or notarized by Apple yet, so macOS refuses to open it, usually saying Bah *"is damaged and can't be opened"* (it isn't; that's just the missing Apple signature). Run `xattr -cr /Applications/Bah.app` in Terminal, then open Bah normally. There's no auto-update on macOS yet: to update, download the new `.dmg`, replace the app and run the `xattr` command again. Netflix, Prime Video and Disney+ don't play on the Mac version yet.
 
-> 🍺 **Video/audio downloads on macOS need [Homebrew](https://brew.sh):** `brew install yt-dlp deno ffmpeg` (or `brew bundle` in a clone of this repo, using the [`Brewfile`](Brewfile)). The Mac build doesn't download programs by itself; Homebrew installs and updates them. Everything else works without them.
+> 🍺 **Video/audio downloads on macOS use [Homebrew](https://brew.sh)'s tools:** `brew install yt-dlp deno ffmpeg` (or `brew bundle` in a clone of this repo, using the [`Brewfile`](Brewfile)). The Mac build doesn't download and run programs itself (an unsigned app running a freshly downloaded binary is what macOS distrusts most); Homebrew installs and updates them. Without ffmpeg, only audio downloads work, saved in the original format (usually M4A). Everything else works without them.
 
 **👨‍💻 I want to hack on the code:** clone and run it — see [Running it](#running-it) below.
 
@@ -113,7 +113,7 @@ Want another workflow? Bah can **save what worked as a skill** — see [CONTRIBU
 
 | Layer | Tech |
 |---|---|
-| Browser shell | **Electron 42** + Chromium |
+| Browser shell | **Electron 44** + Chromium |
 | UI | **React 19** + **TypeScript** + Vite |
 | AI (cloud) | **DeepSeek** (recommended) · **Mistral** · **NVIDIA NIM** |
 | AI (local) | **Ollama** |

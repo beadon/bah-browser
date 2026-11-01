@@ -12,6 +12,8 @@ const ROOT = path.resolve(__dirname, '../..');
 const ELECTRON = process.platform === 'win32' ? path.join(ROOT, 'node_modules/electron/dist/electron.exe')
   : process.platform === 'darwin' ? path.join(ROOT, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron')
   : path.join(ROOT, 'node_modules/electron/dist/electron');
+// --use-mock-keychain: no macOS o cofre de senhas (safeStorage) abre um pedido do Chaveiro que trava o main
+// num perfil novo de teste; o chaveiro falso do Chromium evita o pedido.
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PAGE = `<!doctype html><title>Apply</title><h1>Job application</h1>
 <button id="up" onclick="document.getElementById('hidden').click()">Upload resume</button>
@@ -39,7 +41,7 @@ test('upload: user picks the file; button-opened picker and labelled field both 
     { type: 'done', reason: 'Attached the resume to both fields.', success: true },
   ];
   const { ELECTRON_RUN_AS_NODE: _n, ...env } = process.env;
-  const app = await electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${path.join(tmp, 'profile')}`], env: { ...env, E2E_MOCK_AI: '1', E2E_MOCK_SCRIPT: JSON.stringify(script), NODE_ENV: 'test' } });
+  const app = await electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${path.join(tmp, 'profile')}`, '--use-mock-keychain'], env: { ...env, E2E_MOCK_AI: '1', E2E_MOCK_SCRIPT: JSON.stringify(script), NODE_ENV: 'test' } });
   try {
     // Stub do diálogo nativo: a "pessoa" escolhe resume.pdf. Conta quantas vezes abriu.
     await app.evaluate(({ dialog }, f) => { (globalThis as any).__picks = 0; (dialog as any).showOpenDialog = async () => { (globalThis as any).__picks++; return { canceled: false, filePaths: [f] }; }; }, resume);
@@ -87,7 +89,7 @@ test('folder access: user allows a folder for the session; the agent reads and a
     { type: 'done', reason: 'Attached the engineering resume.', success: true },
   ];
   const { ELECTRON_RUN_AS_NODE: _n, ...env } = process.env;
-  const app = await electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${path.join(tmp, 'profile')}`], env: { ...env, E2E_MOCK_AI: '1', E2E_MOCK_SCRIPT: JSON.stringify(script), NODE_ENV: 'test' } });
+  const app = await electron.launch({ executablePath: ELECTRON, args: [ROOT, `--user-data-dir=${path.join(tmp, 'profile')}`, '--use-mock-keychain'], env: { ...env, E2E_MOCK_AI: '1', E2E_MOCK_SCRIPT: JSON.stringify(script), NODE_ENV: 'test' } });
   try {
     await app.evaluate(({ dialog }, dir) => { (dialog as any).showOpenDialog = async () => ({ canceled: false, filePaths: [dir] }); }, jobs);
     const page = await app.firstWindow(); await page.waitForLoadState('domcontentloaded'); await sleep(1500);

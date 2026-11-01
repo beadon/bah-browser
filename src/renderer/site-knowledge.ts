@@ -1,5 +1,6 @@
 import type { ObservedState } from './page-executor';
 import { googleLocaleParams } from './i18n';
+import { aiMayRecord } from './incognito';
 import { namesStore } from './stores';
 
 // Loja/enciclopédia do PAÍS da pessoa (era fixo amazon.com.br e pt.wikipedia — usuário nos EUA
@@ -973,6 +974,7 @@ function inferShortcutFromIntent(command: string): SiteShortcut | undefined {
 }
 
 export function rememberObservedSite(observation: ObservedState): void {
+  if (!aiMayRecord('siteKnowledge')) return;   // IA numa aba anônima: não aprende nada do site
   const host = safeHost(observation.url);
   if (!host) return;
 
@@ -1017,6 +1019,7 @@ export function rememberObservedSite(observation: ObservedState): void {
 }
 
 export function rememberActionForSite(input: ActionMemoryInput): void {
+  if (!aiMayRecord('siteKnowledge')) return;   // idem
   const host = safeHost(input.url);
   if (!host) return;
 
