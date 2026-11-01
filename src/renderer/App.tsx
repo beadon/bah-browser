@@ -508,6 +508,15 @@ export default function App() {
     store.closeTab(id);
   }, [store]);
   const [, setPermTick] = useState(0);   // re-render ao trocar uma permissão do agente no menu
+  // Modelo ATUAL, visto pelo loop do agente (o state dentro do loop async fica congelado no início
+  // da tarefa; o main troca de motor na hora). Usado pra pausar a tarefa quando o modelo muda.
+  const modelLabelRef = useRef('');
+  modelLabelRef.current = store.localSettings.enabled
+    ? `${store.localSettings.model || 'local model'} (local)`
+    : `${store.aiSettings.provider}${store.aiSettings.model ? ' · ' + store.aiSettings.model : ''}`;
+  const [switchModelSilently, setSwitchModelSilently] = useState<boolean>(() => { try { return localStorage.getItem('switchModelSilently') === '1'; } catch { return false; } });
+  const switchModelSilentlyRef = useRef(switchModelSilently);
+  switchModelSilentlyRef.current = switchModelSilently;
   // Buscador preferido (pesquisa, barra de endereço e agente). 'auto' = Google primeiro.
   const [searchEngine, setSearchEngineState] = useState<EngineId | 'auto'>(() => preferredEngine());
   const cycleSearchEngine = useCallback(() => {
@@ -1422,6 +1431,11 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   <span className="menu-label">{t('menu.memSaver')}</span>
                   <span className={`menu-switch ${memSaverOn ? 'on' : ''}`}>{memSaverOn ? 'ON' : 'OFF'}</span>
                 </button>
+                <button className="menu-item" onClick={() => setSwitchModelSilently(v => { const n = !v; try { localStorage.setItem('switchModelSilently', n ? '1' : '0'); } catch {} return n; })} title={t('menu.switchModelTitle')}>
+                  <span className="menu-ic">🔁</span>
+                  <span className="menu-label">{t('menu.switchModel')}</span>
+                  <span className={`menu-switch ${switchModelSilently ? 'on' : ''}`}>{switchModelSilently ? 'ON' : 'OFF'}</span>
+                </button>
                 {(['userTabs', 'history'] as PermKind[]).map(k => (
                   <button key={k} className="menu-item" onClick={() => { setPerm(k, nextMode(getPerm(k))); setPermTick(x => x + 1); }} title={t('menu.agentPermTitle')}>
                     <span className="menu-ic">{k === 'userTabs' ? '🗂️' : '🕘'}</span>
@@ -1747,6 +1761,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               let lastExtractedText = '';    // último texto extraído (fallback de resposta se travar)
               // Structured agent state — visible to AI on every step
               let plan: string[] = [];
+              let taskModel = modelLabelRef.current;   // modelo que a tarefa está usando
               const memory: Array<{ key: string; value: any; source?: string; ts: number }> = [];
               let replanRequested = false;
               let lastSeenUrl = '';
@@ -2636,6 +2651,39 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     onProgress({ kind: 'status', message: `🖼️ screenshot to model: ${shotForModel.width}x${shotForModel.height} · ${Math.round((shotForModel.bytes ?? 0) / 1024)} KB` });
                   } else if (visionMode !== 'off' && step === 0) {
                     onProgress({ kind: 'status', message: `📄 text only this step (${lastVisionReason})` });
+                  }
+                  // Trocou o modelo no meio da tarefa? Pausa ANTES da próxima chamada ao modelo e pergunta
+                  // (ou segue direto, se a pessoa ligou "trocar sem perguntar").
+                  if (modelLabelRef.current !== taskModel) {
+                    const from = taskModel, to = modelLabelRef.current;
+                    let choice = 'continue';
+                    if (!switchModelSilentlyRef.current) {
+                      choice = await new Promise<string>((resolve) => {
+                        onProgress({ kind: 'confirm', risk: 'model', label: 'model switch', title: '🔁 Model changed during this task',
+                          message: `From: ${from}\nTo: ${to}\nHow should the task go on?`,
+                          choices: [
+                            { label: `▶️ Continue with ${to.slice(0, 40)}`, value: 'continue' },
+                            { label: '🔄 Restart the task with it', value: 'restart' },
+                            { label: '⏹ Stop', value: 'stop' },
+                          ],
+                          onChoose: (v: string) => resolve(v), onConfirm: () => resolve('continue'), onCancel: () => resolve('stop') } as any);
+                      });
+                      throwIfCancelled();
+                    }
+                    taskModel = to;
+                    if (choice === 'stop') {
+                      const reason = `Stopped: the model was switched to ${to} during the task.`;
+                      finishRun('cancelled', reason);
+                      return { thought: thoughts.join('\n\n') || reason, results: allResults, done: { type: 'done', success: false, reason } as BrowserAction };
+                    }
+                    if (choice === 'restart') {
+                      history = `GOAL: ${command}\nNOTE: the task was restarted with a different model (${to}); start over from the current page.`;
+                      plan = [];
+                      memory.length = 0;
+                    } else {
+                      history += `\nMODEL SWITCH: from now on the model is ${to} (was ${from}). Continue the task from here.`;
+                    }
+                    onProgress({ kind: 'status', message: `🔁 ${choice === 'restart' ? 'Restarting' : 'Continuing'} with ${to}` });
                   }
                   let result: any;
                   // Reset every LLM step: a text-only step has no picture to take coordinates from.
