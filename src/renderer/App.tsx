@@ -1848,6 +1848,9 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               const ofThisTask = (d: any) => !!d && (d.startedAt ?? 0) >= taskStartedAt;
               let shortDownloadBlocks = 0;
               let vagueFinishBlocks = 0;   // pedido de busca encerrado sem listar o que achou
+              let unfinishedBlocks = 0;    // encerrou dizendo que "vai continuar"
+              let planNudged = false;      // tarefa em vários sites sem plano
+              const commandMultiSite = /\b(\d+|several|multiple|many|various|vários|varios|diversos)\s+(sites|stores|shops|websites|sellers|retailers|insurers|portals|lojas|sites)\b|\b(compare|comparar)\b.*\b(sites|stores|shops|lojas)\b/i.test(command);
               // Abas desta tarefa: a de partida + as que o agente abriu. Abas da PESSOA e o histórico
               // passam pela permissão (perguntar / sempre / nunca — menu ou resposta na pergunta).
               const agentOpenedTabs = new Set<string>();
@@ -2917,6 +2920,23 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     // concluído antes não faz o pedido NOVO de drivers dar "success").
                     const admitsFailure = /\b(unable|could ?n[o']t|cannot|can't|failed|inaccessible|not (?:able|found|possible)|no viable|não consegui|no pude)\b/i.test(action.reason || '');
                     if (completed && !running && !admitsFailure) action.success = true;
+                  }
+                  // Encerrar dizendo que AINDA vai fazer algo ("Will now search other sites…") não é
+                  // terminar: devolve pro agente seguir (até 2x por tarefa). Vale pra done e report.
+                  if ((action.type === 'done' || action.type === 'report') && unfinishedBlocks < 2) {
+                    const fin = String((action as any).reason || (action as any).summary || '');
+                    if (/\b(will now|i will (now )?(search|check|look|continue|visit|go)|next,? i('| wi)ll|then (i('| wi)ll )?(search|check|visit)|vou (agora )?(buscar|procurar|verificar|continuar)|a seguir vou)\b/i.test(fin)) {
+                      unfinishedBlocks++;
+                      history += `\nNOT FINISHED: your final message says you will still do more ("${fin.slice(0, 120)}…"). Do that now instead of finishing — continue with the next site/step, then finish when everything is covered.`;
+                      onProgress({ kind: 'status', message: '↪️ The agent said it would continue — continuing instead of finishing.' });
+                      continue;
+                    }
+                  }
+                  // Pedido em VÁRIOS sites sem plano depois de 2 passos: pede o checklist (modelo pequeno
+                  // esquece os sites que faltam e encerra no primeiro).
+                  if (commandMultiSite && !planNudged && step >= 2 && plan.length === 0 && action.type !== 'plan') {
+                    planNudged = true;
+                    history += `\nPLAN FIRST: this task covers several sites. Emit a plan action now listing each site/step, then work through it; finish only when every site is covered (or shown to have nothing).`;
                   }
                   onProgress({ kind: 'action', action });
                   if (action.type === 'done') {
