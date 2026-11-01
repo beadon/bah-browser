@@ -2,7 +2,7 @@ import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 import { getPerm, setPerm, nextMode, applyAnswer, type PermKind, type PermMode, type PermAnswer } from './agent-permissions';
 import { isCarefulHost, CAREFUL_ALLOWED } from './careful-sites';
 import { namesStore } from './stores';
-import { JOB_LISTINGS_SCRIPT, formatJobListings, jobIdOf, type JobListing } from './job-listings';
+import { JOB_LISTINGS_SCRIPT, formatJobListings, jobIdOf, noteOpenedByTitle, openedJobOn, formatOpenedJobs, jobsAsked, type JobListing, type OpenedJob } from './job-listings';
 import { paceDelay, recordHit, backoff, isBackedOff, hostOf, BOT_CHECK_RE } from './pacing';
 import { ENGINES, engineOrder, engineForUrl, markBlocked, searchUrl, agentSearchLine, SEARCH_BLOCK_RE, preferredEngine, setPreferredEngine, type EngineId } from './search-engines';
 import { selectSkills, formatSkillsBlock, validateSkill, SKILL_STATES, SKILL_TASKS, SKILL_MAX_WORDS, type Skill } from '../shared/skills';
@@ -2413,6 +2413,9 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               const riskOpts = { jobs: commandIsJobs };
               // Vagas já abertas nesta tarefa (ID da vaga no endereço): o bloco de vagas marca e aponta a próxima.
               const openedJobIds = new Set<string>();
+              const openedJobs: OpenedJob[] = [];
+              const jobsAskedN = jobsAsked(command);
+              const seenJobs: JobListing[] = [];   // cartões vistos nesta tarefa (pra reconhecer a vaga aberta pelo título)
               const commandIsPeople = /\b(people|person|contacts?|who works|employees?|profiles?|recruiters?|founders?|ceo|cto|cfo|coo|vp|directors?|head of|managers? at|engineers? at|linkedin)\b/i.test(command);
               // Site cuidadoso: quantas navegações o agente já fez nele NESTA tarefa (máx. 1).
               let carefulNavs = 0;
@@ -3064,8 +3067,24 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     : [];
                   // Tarefa de vaga: os cartões de vaga desta página, com o ★ de salvo (ver job-listings.ts).
                   if (commandIsJobs) { const jid = jobIdOf(observation.url); if (jid) openedJobIds.add(jid); }
+                  const pageJobs = commandIsJobs ? await withTimeout(wv.executeJavaScript(JOB_LISTINGS_SCRIPT), 3000, [] as JobListing[]).catch(() => [] as JobListing[]) : [];
+                  if (commandIsJobs) {
+                    for (const j of pageJobs || []) if (!seenJobs.some(x => x.title === j.title)) seenJobs.push(j);   // ordem em que apareceram (a lista da home vem primeiro)
+                    noteOpenedByTitle(openedJobIds, observation.title, seenJobs);
+                  }
+                  let onOpenedJob = false;
+                  if (commandIsJobs) {
+                    // Página de uma vaga aberta: guarda o texto dela (o modelo saía sem ler e não tinha o que relatar).
+                    const onJob = openedJobOn(observation.url, observation.title, seenJobs);
+                    onOpenedJob = !!onJob;
+                    if (onJob && !openedJobs.some(o => o.title === onJob.title)) {
+                      // A partir do título da vaga (antes vem o menu do site), e o bastante pra pegar os requisitos.
+                      const text = await withTimeout(wv.executeJavaScript(`(function(t){ var s = (document.body.innerText || '').replace(/\\s+/g, ' '); var i = s.indexOf(t); return s.slice(Math.max(i, 0), Math.max(i, 0) + 1600); })(${JSON.stringify(onJob.title)})`), 2000, '').catch(() => '');
+                      openedJobs.push({ title: onJob.title, url: observation.url, text: String(text || observation.text_sample || '').slice(0, 1600) });
+                    }
+                  }
                   const jobsBlock = commandIsJobs
-                    ? formatJobListings(await withTimeout(wv.executeJavaScript(JOB_LISTINGS_SCRIPT), 3000, [] as JobListing[]).catch(() => [] as JobListing[]), 8, openedJobIds)
+                    ? [formatOpenedJobs(openedJobs, jobsAskedN, seenJobs.find(j => !openedJobs.some(o => o.title === j.title)) || null), (onOpenedJob ? '' : formatJobListings(pageJobs || [], 8, openedJobIds))].filter(Boolean).join('\n')   // na página da vaga, as "vagas parecidas" só distraem
                     : '';
                   const dlButtonsBlock = dlButtons.length
                     ? `LIKELY DOWNLOAD BUTTON${dlButtons.length > 1 ? 'S' : ''} ON THIS PAGE (click to start the file; accepting the license/EULA is part of downloading):\n${dlButtons.map(e => `  [${e.id}] "${String(e.text || (e as any).aria || '').trim().slice(0, 60)}"`).join('\n')}`

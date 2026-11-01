@@ -8,6 +8,12 @@
 
 export interface JobListing { title: string; text: string; href: string; saved: boolean }
 
+/** Marca como aberta a vaga cujo título é o começo do título da página ("VP of IT … - Los Angeles, CA - Indeed.com"). */
+export function noteOpenedByTitle(opened: Set<string>, pageTitle: string, items: JobListing[]): void {
+  const t = (pageTitle || '').toLowerCase().trim();
+  for (const j of items || []) { const jt = (j.title || '').toLowerCase(); if (jt.length >= 6 && t.startsWith(jt)) opened.add('t:' + jt); }
+}
+
 // ID da vaga num endereço: ?jk= / ?vjk= (Indeed), currentJobId (LinkedIn), gh_jid (Greenhouse)…
 export function jobIdOf(url: string): string | null {
   try {
@@ -24,7 +30,8 @@ export function jobIdOf(url: string): string | null {
 // Roda na página (executeJavaScript). Link de vaga = endereço com ID de vaga. Cartão = o maior
 // ancestral do link que não contém OUTRO link de vaga (assim o marcador de salvo é deste cartão).
 export const JOB_LISTINGS_SCRIPT = `(function(){
-  var JOB = /\\bviewjob\\b|[?&](jk|vjk|currentJobId|gh_jid|jobId|job_id)=|\\/jobs?\\/(view\\/)?[\\w-]*\\d{5,}|\\/(rc|pagead)\\/clk/i;
+  // Caminho do link (não o parâmetro de rastreio: o menu do Indeed tem "from=gnav-viewjob").
+  var JOB = /^(https?:\\/\\/[^\\/]+)?\\/(viewjob\\b|(rc|pagead)\\/clk\\b|jobs?\\/(view\\/)?[\\w-]*\\d{5,})|[?&](jk|vjk|currentJobId|gh_jid|jobId|job_id)=/i;
   var all = Array.prototype.slice.call(document.querySelectorAll('a[href]')).filter(function(a){ return JOB.test(a.getAttribute('href') || ''); });
   var isJob = function(a){ return all.indexOf(a) >= 0; };
   var out = [], seen = {};
@@ -58,7 +65,8 @@ function cardLine(j: JobListing): string {
 export function formatJobListings(items: JobListing[], max = 8, opened: ReadonlySet<string> = new Set()): string {
   const jobs = (items || []).filter(j => j && j.title && j.href);
   if (jobs.length < 2) return '';
-  const isOpen = (j: JobListing) => { const id = jobIdOf(j.href); return !!id && opened.has(id); };
+  // Aberta = ID da vaga visto no endereço, ou o título dela visto como título da página (vaga patrocinada não tem ID no link).
+  const isOpen = (j: JobListing) => { const id = jobIdOf(j.href); return (!!id && opened.has(id)) || opened.has('t:' + j.title.toLowerCase()); };
   const shown = jobs.slice(0, max);
   const lines = shown.map((j, i) => `  ${i + 1}. ${isOpen(j) ? '✓ OPENED · ' : ''}${j.saved ? '★ SAVED · ' : ''}${cardLine(j)} → ${j.href}`);
   const savedN = jobs.filter(j => j.saved).length;
@@ -68,4 +76,38 @@ export function formatJobListings(items: JobListing[], max = 8, opened: Readonly
     ? `\nYou already opened ${openN} of these (✓ OPENED) — do not open them again.${next >= 0 ? ` NEXT unopened: #${next + 1}.` : ''}`
     : '';
   return `JOB LISTINGS ON THIS PAGE (${jobs.length} found${savedN ? `, ${savedN} ★ saved` : ''}). These ARE job postings. On a signed-in job board's home page they are the user's recommended / suggested jobs, whatever the heading says ("Matches your preferences", "Jobs for you"…). ★ SAVED = the user (or you) saved it with the card's bookmark badge: a valid pick — do not unsave it. To open one: navigate to its link, then extract_text and note its details before the next.${progress}\n${lines.join('\n')}${jobs.length > max ? `\n  … ${jobs.length - max} more` : ''}`;
+}
+
+/** Quantas vagas a pessoa pediu ("the first 2 jobs", "two postings", "3 vagas"); null = não disse. */
+export function jobsAsked(command: string): number | null {
+  const W: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, um: 1, uma: 1, dois: 2, duas: 2, 'três': 3, tres: 3 };
+  const m = /\b(\d{1,2}|one|two|three|four|five|six|um|uma|dois|duas|tr[eê]s)\s+(?:\w+\s+){0,2}?(jobs?|postings?|openings?|positions?|roles?|vagas?|listings?)\b/i.exec(command || '');
+  if (!m) return null;
+  const n = /^\d+$/.test(m[1]) ? Number(m[1]) : W[m[1].toLowerCase()];
+  return n && n > 0 && n <= 20 ? n : null;
+}
+
+/** A vaga (dos cartões vistos) que esta página é: ID no endereço ou título no título da página. */
+export function openedJobOn(url: string, pageTitle: string, seen: JobListing[]): JobListing | null {
+  const id = jobIdOf(url);
+  const t = (pageTitle || '').toLowerCase().trim();
+  for (const j of seen || []) {
+    if (id && jobIdOf(j.href) === id) return j;
+    const jt = (j.title || '').toLowerCase();
+    if (jt.length >= 6 && t.startsWith(jt)) return j;
+  }
+  return null;
+}
+
+export interface OpenedJob { title: string; url: string; text: string }
+
+/** Detalhes guardados das vagas abertas + quantas faltam: o modelo pequeno abria e saía sem ler. */
+export function formatOpenedJobs(opened: OpenedJob[], asked: number | null, next?: JobListing | null): string {
+  if (!opened.length) return '';
+  const head = asked
+    ? (opened.length >= asked
+      ? `You opened ${opened.length} of the ${asked} job(s) asked — ALL DONE: report them now (title, company, location, pay, job type, key requirements, link) from the details below. Do not open more jobs.`
+      : `You opened ${opened.length} of the ${asked} job(s) asked — open the NEXT unopened one${next ? `: "${next.title}" → navigate to ${next.href}` : ''}.`)
+    : `Jobs you opened so far: ${opened.length}.`;
+  return `DETAILS OF JOBS YOU OPENED (kept by Bah from each posting page — use them in your report): ${head}\n${opened.map((o, i) => `  ${i + 1}. ${o.title} — ${o.url}\n     ${o.text}`).join('\n')}`;
 }
