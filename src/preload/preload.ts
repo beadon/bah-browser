@@ -212,6 +212,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   verifyClick: (wcId: number, backendNodeId: number) =>
     ipcRenderer.invoke('cdp:verify-click', wcId, backendNodeId),
   skillsList: () => ipcRenderer.invoke('skills:list'),
+  applicantGet: () => ipcRenderer.invoke('applicant:get'),
+  applicantSetProfile: (p: any) => ipcRenderer.invoke('applicant:set-profile', p),
+  applicantSaveAnswers: (a: Record<string, string>) => ipcRenderer.invoke('applicant:save-answers', a),
+  applicantDeleteAnswer: (key: string) => ipcRenderer.invoke('applicant:delete-answer', key),
+  applicantClear: () => ipcRenderer.invoke('applicant:clear'),
   proxyGet: () => ipcRenderer.invoke('proxy:get'),
   proxySet: (c: any) => ipcRenderer.invoke('proxy:set', c),
   proxyTest: (url?: string) => ipcRenderer.invoke('proxy:test', url),

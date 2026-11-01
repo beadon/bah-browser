@@ -4,6 +4,8 @@ import { isCarefulHost, CAREFUL_ALLOWED } from './careful-sites';
 import { namesStore } from './stores';
 // Rótulo de botão que abre o seletor de arquivos do SO.
 const UPLOAD_BUTTON_RE = /^(upload|attach|browse|choose|select|add)\b[\w\s'’/-]{0,25}\b(files?|r[eé]sum[eé]s?|cv|documents?|cover letter|attachments?)(?![a-z0-9])|^(upload|attach|browse|choose files?|anexar|enviar arquivo)\.{0,3}$/i;
+import { FORM_SCAN_SCRIPT, formApplyScript } from './form-filler';
+import { planFill, questionKey, type FieldInfo, type FillDecision } from '../shared/form-fill';
 import { FORM_FIELDS_SCRIPT, formatFormProgress, resumeFacts, type FormField } from './form-progress';
 import { JOB_LISTINGS_SCRIPT, formatJobListings, jobIdOf, noteOpenedByTitle, openedJobOn, formatOpenedJobs, jobsAsked, type JobListing, type OpenedJob } from './job-listings';
 import { paceDelay, recordHit, backoff, isBackedOff, hostOf, BOT_CHECK_RE } from './pacing';
@@ -13,6 +15,7 @@ import AgentVisualOverlay, { AgentVisualState, ClickRipple } from './components/
 import { AppGuideBar, BeginnerTour } from './components/AppGuide';
 import { ProxySettings, ProxyAuthPrompt } from './components/ProxyPanel';
 import { RegionPanel } from './components/RegionPanel';
+import { ApplicantPanel } from './components/ApplicantPanel';
 import { JsDialogHost } from './components/JsDialogHost';
 import { matchRole } from '../shared/role-target';
 import { agentDialogsStart, agentDialogsStop, agentDialogsTab, armDialog, drainDialogLog } from './js-dialogs';
@@ -279,6 +282,11 @@ declare global {
       getHwAccel?: () => Promise<{ enabled: boolean }>;
       setHwAccel?: (on: boolean) => Promise<{ ok: boolean; enabled?: boolean }>;
       onSafeBrowsingBlock?: (cb: (info: { url: string; host: string }) => void) => void;
+      applicantGet?: () => Promise<{ profile: import('../shared/form-fill').ApplicantProfile; answers: Record<string, string>; available: boolean }>;
+      applicantSetProfile?: (p: any) => Promise<{ ok: boolean }>;
+      applicantSaveAnswers?: (a: Record<string, string>) => Promise<{ ok: boolean }>;
+      applicantDeleteAnswer?: (key: string) => Promise<{ ok: boolean }>;
+      applicantClear?: () => Promise<{ ok: boolean }>;
       proxyGet?: () => Promise<any>;
       regionGet?: (mode?: boolean | 'peek') => Promise<any>;
       jsDialogRespond?: (id: number, accept: boolean, text?: string) => Promise<any>;
@@ -838,6 +846,7 @@ export default function App() {
   // First-run guide: the bar is a hint until dismissed, the tour is a reopenable dialog.
   const [proxyOpen, setProxyOpen] = useState(false);
   const [regionOpen, setRegionOpen] = useState(false);
+  const [applicantOpen, setApplicantOpen] = useState(false);
   const [folderGrants, setFolderGrants] = useState<Array<{ folder: string; path: string }>>([]);
   useEffect(() => { if (menuOpen) window.electronAPI?.uploadGrants?.().then(g => setFolderGrants(g || [])); }, [menuOpen]);
   const [tzChip, setTzChip] = useState('');   // fuso escolhido pros sites ('' = o do computador)
@@ -1951,6 +1960,10 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   <span className="menu-ic">🌍</span>
                   <span className="menu-label">{t('menu.region')}</span>
                 </button>
+                <button className="menu-item" onClick={() => { setMenuOpen(false); setApplicantOpen(true); }} title={t('menu.applicantTitle')}>
+                  <span className="menu-ic">📝</span>
+                  <span className="menu-label">{t('menu.applicant')}</span>
+                </button>
                 <button className="menu-item" onClick={() => { setMenuOpen(false); setProxyOpen(true); }} title={t('menu.proxyTitle')}>
                   <span className="menu-ic">🌐</span>
                   <span className="menu-label">{t('menu.proxy')}</span>
@@ -2170,6 +2183,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
           )}
           {proxyOpen && <ProxySettings onClose={() => setProxyOpen(false)} />}
           {regionOpen && <RegionPanel onClose={() => setRegionOpen(false)} />}
+          {applicantOpen && <ApplicantPanel onClose={() => setApplicantOpen(false)} />}
           <JsDialogHost />
           <ProxyAuthPrompt />
           {showGuide && (
@@ -2419,6 +2433,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               const openedJobs: OpenedJob[] = [];
               let lastReadFile: string | null = null;
               let lastFormFields: FormField[] = [];
+              const autoFilledForms = new Set<string>();   // páginas de formulário já preenchidas por código nesta tarefa
               let lastResumeFacts: ReturnType<typeof resumeFacts> = {};   // formulário de candidatura da última observação
               let resumeFirstBlocks = 0;   // último arquivo lido da pasta liberada (o currículo escolhido)
               const jobsAskedN = jobsAsked(command);
@@ -3091,8 +3106,46 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     }
                   }
                   // Formulário de candidatura (campo de arquivo ou ≥4 campos — não a busca da home): lista do que falta.
-                  const formFields = commandIsJobs ? await withTimeout(wv.executeJavaScript(FORM_FIELDS_SCRIPT), 3000, [] as FormField[]).catch(() => [] as FormField[]) : [];
-                  const isAppForm = !!formFields && (formFields.some((f: FormField) => f.kind === "file") || formFields.length >= 4);
+                  let formFields = commandIsJobs ? await withTimeout(wv.executeJavaScript(FORM_FIELDS_SCRIPT), 3000, [] as FormField[]).catch(() => [] as FormField[]) : [];
+                  let isAppForm = !!formFields && (formFields.some((f: FormField) => f.kind === "file") || formFields.length >= 4);
+                  // Preenchimento POR CÓDIGO (uma vez por página de formulário): perfil + respostas salvas + currículo;
+                  // o que sobrar a pessoa responde num cartão só. O modelo só cuida do resto.
+                  if (isAppForm && !autoFilledForms.has(observation.url)) {
+                    const applicant = await window.electronAPI?.applicantGet?.().catch(() => null);
+                    const profile = applicant?.profile || {};
+                    if (profile.email || lastReadFile) {
+                      autoFilledForms.add(observation.url);
+                      const scanFields = await withTimeout(wv.executeJavaScript(FORM_SCAN_SCRIPT), 4000, [] as FieldInfo[]).catch(() => [] as FieldInfo[]);
+                      const plan = planFill(scanFields || [], profile, applicant?.answers || {}, lastResumeFacts);
+                      const did: number[] = plan.fill.length ? await withTimeout(wv.executeJavaScript(formApplyScript(plan.fill)), 4000, [] as number[]).catch(() => [] as number[]) : [];
+                      const filledNow = plan.fill.filter(d => did.includes(d.idx));
+                      // Pergunta à pessoa: o que falta e o modelo não deve inventar (obrigatórias e escolhas; não arquivo).
+                      const ask = plan.missing.filter(f => f.type !== 'file' && f.type !== 'combobox' && (f.required || (f.options && f.options.length))).slice(0, 12);
+                      let answered: FillDecision[] = [];
+                      if (ask.length) {
+                        const reply = await new Promise<string>((resolve) => onProgress({ kind: 'confirm', risk: 'form', label: 'application questions',
+                          title: `📝 ${ask.length} question${ask.length > 1 ? 's' : ''} your profile does not answer`,
+                          message: `I filled ${filledNow.length} field${filledNow.length === 1 ? '' : 's'} on ${hostOf(observation.url) || 'this form'} from ${profile.email ? 'your profile' : 'the résumé'}${filledNow.length ? `: ${filledNow.map(d => d.label).slice(0, 8).join(', ')}` : ''}. Answer the rest (leave blank to skip):`,
+                          questions: ask.map(f => ({ key: questionKey(f.label), label: f.label, options: f.options, required: f.required })),
+                          onChoose: (v: string) => resolve(v), onConfirm: () => resolve(''), onCancel: () => resolve('') } as any));
+                        throwIfCancelled();
+                        let got: { answers?: Record<string, string>; save?: boolean } = {};
+                        try { got = JSON.parse(reply || '{}'); } catch {}
+                        if (got.answers && Object.keys(got.answers).length) {
+                          if (got.save) await window.electronAPI?.applicantSaveAnswers?.(got.answers).catch(() => null);
+                          const second = planFill(ask, {}, got.answers);
+                          const did2: number[] = second.fill.length ? await withTimeout(wv.executeJavaScript(formApplyScript(second.fill)), 4000, [] as number[]).catch(() => [] as number[]) : [];
+                          answered = second.fill.filter(d => did2.includes(d.idx));
+                        }
+                      }
+                      if (filledNow.length || answered.length) {
+                        history += `\nFORM FILLED BY BAH (from ${profile.email ? 'the user\'s profile' : 'the résumé'} and saved answers — do not retype these): ${[...filledNow, ...answered].map(d => `${d.label} = ${d.value ?? (scanFields.find((f: FieldInfo) => f.idx === d.idx)?.options || [])[d.option ?? -1] ?? '✓'}`).join('; ')}.`;
+                        onProgress({ kind: 'status', message: `✍️ Filled ${filledNow.length + answered.length} field(s) from ${profile.email ? 'your profile' : 'the résumé'}${answered.length ? ' and your answers' : ''}` });
+                        formFields = await withTimeout(wv.executeJavaScript(FORM_FIELDS_SCRIPT), 3000, formFields).catch(() => formFields);
+                        isAppForm = !!formFields && (formFields.some((f: FormField) => f.kind === "file") || formFields.length >= 4);
+                      }
+                    }
+                  }
                   lastFormFields = isAppForm ? formFields : [];
                   const formBlock = isAppForm ? formatFormProgress(formFields, !!lastReadFile, lastResumeFacts) : '';
                   const jobsBlock = commandIsJobs

@@ -52,6 +52,7 @@ import { setupProxy, proxyFor } from './proxy';
 import { setupRegion, getTimezoneOverride } from './region';
 import { setupUpload, setUploadTextExtractor } from './upload';
 import { attachJsDialogs, setupJsDialogs } from './js-dialogs';
+import { setupApplicantProfile } from './applicant-profile';
 import { setupFrames } from './frames';
 import { setupPageSave } from './page-save';
 import { loadSystemCAs, installCAs } from './system-ca';
@@ -3950,6 +3951,7 @@ app.whenReady().then(async () => {
   setupRegion(applyTimezoneEverywhere, () => mainWindow);
   setupUpload(() => mainWindow, sharedEnsureDebugger);
   setupJsDialogs();
+  setupApplicantProfile();
   setupFrames(sharedEnsureDebugger);
   setupPageSave(sharedEnsureDebugger);
   loadSystemCAs().then((pems) => { systemCAs = pems; const n = installCAs(pems); console.log(`[SystemCA] ${pems.length} OS certificates, ${n} added to Node`); }).catch(() => {});
