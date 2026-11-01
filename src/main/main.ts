@@ -47,6 +47,7 @@ import { setupSkills } from './skills-loader';
 import { setupProxy, proxyFor } from './proxy';
 import { setupSitePermissions } from './site-permissions';
 import { setupRegion, getTimezoneOverride } from './region';
+import { setupUpload } from './upload';
 import { loadSystemCAs, installCAs } from './system-ca';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
@@ -3411,6 +3412,7 @@ app.whenReady().then(async () => {
   setupProxy(() => mainWindow);
   setupSitePermissions(() => mainWindow);
   setupRegion(applyTimezoneEverywhere, () => mainWindow);
+  setupUpload(() => mainWindow, sharedEnsureDebugger);
   loadSystemCAs().then((pems) => { systemCAs = pems; const n = installCAs(pems); console.log(`[SystemCA] ${pems.length} OS certificates, ${n} added to Node`); }).catch(() => {});
   {
     const browsingSession = session.fromPartition('persist:browser');

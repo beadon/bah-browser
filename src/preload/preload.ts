@@ -113,6 +113,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('proxy:auth-request', listener);
     return () => ipcRenderer.removeListener('proxy:auth-request', listener);
   },
+  uploadPick: (opts: { multiple?: boolean; title?: string }) => ipcRenderer.invoke('upload:pick', opts),
+  uploadSet: (wcId: number, backendNodeId: number | null, token: string, at?: { x: number; y: number }) => ipcRenderer.invoke('upload:set', wcId, backendNodeId, token, at),
   regionGet: (force?: boolean) => ipcRenderer.invoke('region:get', force),
   regionSet: (r: any) => ipcRenderer.invoke('region:set', r),
   onRegionChanged: (cb: () => void) => { const l = () => cb(); ipcRenderer.on('region:changed', l); return () => ipcRenderer.removeListener('region:changed', l); },

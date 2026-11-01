@@ -193,6 +193,8 @@ declare global {
       onSafeBrowsingBlock?: (cb: (info: { url: string; host: string }) => void) => void;
       proxyGet?: () => Promise<any>;
       regionGet?: (mode?: boolean | 'peek') => Promise<any>;
+      uploadPick?: (opts: { multiple?: boolean; title?: string }) => Promise<{ ok: boolean; canceled?: boolean; token?: string; names?: string[]; sizes?: number[] }>;
+      uploadSet?: (wcId: number, backendNodeId: number | null, token: string, at?: { x: number; y: number }) => Promise<{ ok: boolean; names?: string[]; accept?: string; dropped?: number; error?: string }>;
       regionSet?: (r: any) => Promise<any>;
       onRegionChanged?: (cb: () => void) => () => void;
       sitePermRespond?: (id: number, choice: 'once' | 'always' | 'never' | 'dismiss' | 'auto-deny') => Promise<any>;
@@ -1912,6 +1914,8 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                 } }
               const commandWantsSearch = /\b(find|search|look up|compare|cheapest|available|list|show me|procur\w*|busc\w*|pesquis\w*|encontr\w*)\b/i.test(command);
               const captchaTriedUrls = new Set<string>();   // 1 tentativa de checkbox por página
+              // Arquivos que a PESSOA escolheu nesta tarefa (upload): o agente só reusa estes, pelo cartão.
+              const taskUploads: Array<{ token: string; names: string[] }> = [];
               // look_at: a próxima captura vai pro modelo como recorte ampliado desta área (1 passo).
               let pendingZoom: { x: number; y: number; w: number; h: number; label: string } | null = null;
               // Download que começou NESTA tarefa (não um que terminou depois, vindo da anterior).
@@ -4502,6 +4506,38 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                         toolResult = after === want
                           ? { success: true, info: { now: want ? 'checked' : 'unchecked' } }
                           : { success: false, error: `Clicked @${action.ref} but it is still ${after ? 'checked' : 'unchecked'}.` };
+                      }
+                    }
+                  } else if (action.type === 'upload') {
+                    // Arquivo SÓ do diálogo do SO, escolhido pela pessoa (ou reusado dela nesta tarefa).
+                    const target = observation.interactive_elements.find(e => e.id === action.ref);
+                    const wcIdUp = (wv as any).getWebContentsId?.();
+                    if (!target || wcIdUp == null) {
+                      toolResult = { success: false, error: `No element with ref @${action.ref} — re-observe the page.` };
+                    } else {
+                      const site = hostOf(wv.getURL()) || 'this site';
+                      const field = (target.text || target.aria || 'upload field').slice(0, 60);
+                      const choice = await new Promise<string>((resolve) => onProgress({ kind: 'confirm', risk: 'upload', label: 'upload',
+                        title: `📎 The agent wants to upload a file to ${site}`,
+                        message: `Field: "${field}". You choose the file in your own file dialog — the agent never picks files from your computer. Nothing is sent until the site's form is submitted.`,
+                        choices: [
+                          ...taskUploads.map(u => ({ label: `📎 Use ${u.names.join(', ').slice(0, 60)}`, value: u.token })),
+                          { label: '📁 Choose file…', value: 'pick' }, { label: 'Cancel', value: 'no' },
+                        ],
+                        onChoose: (v: string) => resolve(v), onConfirm: () => resolve('pick'), onCancel: () => resolve('no') } as any));
+                      throwIfCancelled();
+                      let token = choice !== 'pick' && choice !== 'no' ? choice : '';
+                      if (choice === 'pick') {
+                        const p = await window.electronAPI?.uploadPick?.({ multiple: !!action.multiple, title: `Upload to ${site}: ${field}` });
+                        if (p?.ok && p.token) { token = p.token; taskUploads.push({ token, names: p.names || [] }); }
+                      }
+                      if (!token) toolResult = { success: false, error: 'The user did not choose a file. Ask them (done with a question) or continue without the upload.' };
+                      else {
+                        const r = await window.electronAPI?.uploadSet?.(wcIdUp, target.backendNodeId ?? null, token, target.backendNodeId == null ? { x: target.x, y: target.y } : undefined);
+                        toolResult = r?.ok
+                          ? { success: true, info: { attached: r.names, note: `${(r.names || []).join(', ')} is attached to the field. Check the page shows it, then continue the form.${r.dropped ? ` (field takes one file; ${r.dropped} not attached)` : ''}` } }
+                          : { success: false, error: r?.error || 'upload failed' };
+                        if (r?.ok) onProgress({ kind: 'status', message: `📎 Attached ${(r.names || []).join(', ')}` });
                       }
                     }
                   } else if (action.type === 'select_option') {

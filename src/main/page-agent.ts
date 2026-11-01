@@ -31,6 +31,7 @@ export type AgentAction =
   | { type: 'close_tab'; tab: number }
   | { type: 'click_ref'; ref: number }
   | { type: 'select_option'; ref: number; option: string }
+  | { type: 'upload'; ref: number; multiple?: boolean }
   | { type: 'look_at'; ref?: number; x?: number; y?: number; w?: number; h?: number }
   | { type: 'find'; text: string }
   | { type: 'web_search'; query: string }
@@ -87,6 +88,7 @@ const VALID_ACTIONS = new Set([
   'check',
   'uncheck',
   'select_option',
+  'upload',
   'list_downloads',
   'cancel_download',
   'pause_download',
@@ -377,6 +379,8 @@ export class PageAgent {
         return { type: 'drag', ref: toRef(action.ref ?? action.from_ref ?? action.from), to_ref: toRef(action.to_ref ?? action.to ?? action.target_ref) };
       case 'check': case 'uncheck':
         return { type: action.type, ref: toRef(action.ref) };
+      case 'upload':
+        return { type: 'upload', ref: toRef(action.ref), multiple: !!action.multiple };
       case 'select_option':
         return { type: 'select_option', ref: toRef(action.ref), option: String(action.option ?? action.value ?? action.text ?? action.label ?? '').trim() };
       case 'fill_ref':
@@ -476,6 +480,8 @@ export function validateAction(a: AgentAction): string | null {
       return finiteInt(a.ref) && finiteInt(a.to_ref) ? null : 'drag needs "ref" (what to drag) and "to_ref" (where to drop) as element ids';
     case 'check': case 'uncheck':
       return finiteInt(a.ref) ? null : `${a.type} needs a finite non-negative integer "ref", got ${JSON.stringify((a as any).ref)}`;
+    case 'upload':
+      return finiteInt(a.ref) ? null : `upload needs the "ref" of the upload button or file field, got ${JSON.stringify((a as any).ref)}`;
     case 'select_option':
       if (!finiteInt(a.ref)) return `select_option needs a finite non-negative integer "ref", got ${JSON.stringify((a as any).ref)}`;
       return nonEmpty(a.option) ? null : 'select_option needs the "option" text to choose';
