@@ -2,6 +2,9 @@ import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 import { getPerm, setPerm, nextMode, applyAnswer, type PermKind, type PermMode, type PermAnswer } from './agent-permissions';
 import { isCarefulHost, CAREFUL_ALLOWED } from './careful-sites';
 import { namesStore } from './stores';
+// Rótulo de botão que abre o seletor de arquivos do SO.
+const UPLOAD_BUTTON_RE = /^(upload|attach|browse|choose|select|add)\b[\w\s'’/-]{0,25}\b(files?|r[eé]sum[eé]s?|cv|documents?|cover letter|attachments?)(?![a-z0-9])|^(upload|attach|browse|choose files?|anexar|enviar arquivo)\.{0,3}$/i;
+import { FORM_FIELDS_SCRIPT, formatFormProgress, resumeFacts, type FormField } from './form-progress';
 import { JOB_LISTINGS_SCRIPT, formatJobListings, jobIdOf, noteOpenedByTitle, openedJobOn, formatOpenedJobs, jobsAsked, type JobListing, type OpenedJob } from './job-listings';
 import { paceDelay, recordHit, backoff, isBackedOff, hostOf, BOT_CHECK_RE } from './pacing';
 import { ENGINES, engineOrder, engineForUrl, markBlocked, searchUrl, agentSearchLine, SEARCH_BLOCK_RE, preferredEngine, setPreferredEngine, type EngineId } from './search-engines';
@@ -2414,6 +2417,10 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               // Vagas já abertas nesta tarefa (ID da vaga no endereço): o bloco de vagas marca e aponta a próxima.
               const openedJobIds = new Set<string>();
               const openedJobs: OpenedJob[] = [];
+              let lastReadFile: string | null = null;
+              let lastFormFields: FormField[] = [];
+              let lastResumeFacts: ReturnType<typeof resumeFacts> = {};   // formulário de candidatura da última observação
+              let resumeFirstBlocks = 0;   // último arquivo lido da pasta liberada (o currículo escolhido)
               const jobsAskedN = jobsAsked(command);
               const seenJobs: JobListing[] = [];   // cartões vistos nesta tarefa (pra reconhecer a vaga aberta pelo título)
               const commandIsPeople = /\b(people|person|contacts?|who works|employees?|profiles?|recruiters?|founders?|ceo|cto|cfo|coo|vp|directors?|head of|managers? at|engineers? at|linkedin)\b/i.test(command);
@@ -3083,6 +3090,11 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       openedJobs.push({ title: onJob.title, url: observation.url, text: String(text || observation.text_sample || '').slice(0, 1600) });
                     }
                   }
+                  // Formulário de candidatura (campo de arquivo ou ≥4 campos — não a busca da home): lista do que falta.
+                  const formFields = commandIsJobs ? await withTimeout(wv.executeJavaScript(FORM_FIELDS_SCRIPT), 3000, [] as FormField[]).catch(() => [] as FormField[]) : [];
+                  const isAppForm = !!formFields && (formFields.some((f: FormField) => f.kind === "file") || formFields.length >= 4);
+                  lastFormFields = isAppForm ? formFields : [];
+                  const formBlock = isAppForm ? formatFormProgress(formFields, !!lastReadFile, lastResumeFacts) : '';
                   const jobsBlock = commandIsJobs
                     ? [formatOpenedJobs(openedJobs, jobsAskedN, seenJobs.find(j => !openedJobs.some(o => o.title === j.title)) || null), (onOpenedJob ? '' : formatJobListings(pageJobs || [], 8, openedJobIds))].filter(Boolean).join('\n')   // na página da vaga, as "vagas parecidas" só distraem
                     : '';
@@ -3198,6 +3210,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     downloadsBlock,
                     dlButtonsBlock,
                     jobsBlock,
+                    formBlock,
                     skillsBlock,
                     '',
                     planBlock,
@@ -3499,6 +3512,18 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     if (pick) { onProgress({ kind: 'status', message: `🎯 ${action.role}${action.name ? ` "${action.name}"` : ''}${action.nth ? ` #${action.nth}` : ''} → @${pick.id}` }); action = { type: 'click_ref', ref: pick.id }; }
                     else roleMiss = hits.length ? `only ${hits.length} ${action.role}(s) match "${action.name || ''}" — nth ${action.nth} does not exist` : `no ${action.role} labelled "${action.name || ''}" in INTERACTIVE ELEMENTS (scroll, use find, or pick a ref)`;
                   }
+                  // Botão que abre o seletor de arquivos do SO ("Upload File", "Attach résumé"…): o agente não
+                  // usa esse diálogo — vira a ação upload (o arquivo que ele acabou de ler da pasta liberada,
+                  // ou a pessoa escolhe). No Ashby o modelo clicava o botão até desistir.
+                  if (action?.type === 'click_ref') {
+                    const clickRef = action.ref;
+                    const t = observation.interactive_elements.find(e => e.id === clickRef);
+                    const lbl = `${t?.text || ''}`.trim() || `${(t as any)?.aria || ''}`.trim();
+                    if (t && lbl.length <= 40 && UPLOAD_BUTTON_RE.test(lbl)) {
+                      onProgress({ kind: 'status', message: `📎 "${lbl}" opens a file picker — attaching ${lastReadFile ? lastReadFile.split('/').pop() : 'a file you pick'} instead` });
+                      action = { type: 'upload', ref: clickRef, ...(lastReadFile ? { file: lastReadFile } : {}) } as any;
+                    }
+                  }
                   if (!action) {
                     finishRun('failed', 'AI did not return an action.');
                     return { error: 'AI did not return an action.', thought: thoughts.join('\n'), results: allResults };
@@ -3646,6 +3671,14 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     const claimsDone = action.success === true || (
                       /\b(success\w*|complete\w*|finished|downloaded|baixad\w*|conclu\w*)\b/i.test(action.reason || '')
                       && !/\b(unable|could ?n[o']t|cannot|can't|failed to|não consegui|no pude)\b/i.test(action.reason || ''));
+                    // Candidatura: parar no formulário com campos obrigatórios vazios SEM ter lido o currículo
+                    // (o modelo pedia nome/e-mail à pessoa — estão no currículo). Uma vez, manda ler.
+                    if (commandIsJobs && !lastReadFile && resumeFirstBlocks < 1 && lastFormFields.some(f => f.required && !f.done && f.kind !== 'choice')) {
+                      resumeFirstBlocks++;
+                      history += `\nNOT DONE YET: the application form still has empty required fields and you have not read the résumé. Do list_files, then read_file the résumé that fits this job; fill the fields from it. Ask the user only for what it does not say.`;
+                      onProgress({ kind: 'status', message: '📄 Reading the résumé before asking you.' });
+                      continue;
+                    }
                     if (commandWantsDownload && claimsDone && noDownloadYetBlocks < 2) {
                       const anyDownload = [...dlLatestRef.current.values()]
                         .some(d => ofThisTask(d) && d.state !== 'failed');   // cancelado = tratado (agente ou pessoa decidiu)
@@ -3797,8 +3830,12 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   let toolResult: any;
                   if ((action.type === 'click_ref' || action.type === 'fill_ref') && wcId != null) {
                     const target = observation.interactive_elements.find(e => e.id === action.ref);
+                    const editable = (e: any) => /^(input|textarea|select)$/i.test(e?.tag || '') || /^(textbox|combobox|searchbox|spinbutton)$/i.test(e?.role || '') || e?.contentEditable === true || e?.editable === true;
                     if (!target) {
                       toolResult = { success: false, error: `No element with ref @${action.ref}` };
+                    } else if (action.type === 'fill_ref' && !editable(target)) {
+                      // Digitar num <div>/aba/link clicava nele — no Ashby saiu do formulário.
+                      toolResult = { success: false, reason: 'not_editable', error: `@${action.ref} is a <${target.tag}${(target as any).role ? ` role="${(target as any).role}"` : ''}> "${String(target.text || '').slice(0, 40)}", not a text field. fill_ref only works on fields listed as <input>/<textarea>/<select> or role textbox/combobox. If this form has no such field, skip it.` };
                     } else {
                       // FREIO DE SEGURANÇA: pagamento/exclusão/cartão → confirma antes de agir.
                       const risk = classifyRisk(action.type, target.text, target.placeholder, target.aria, riskOpts);
@@ -5144,10 +5181,12 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       toolResult = { success: true, info: { files: files.length } };
                     } else {
                       const r = await window.electronAPI?.uploadReadFile?.(action.file);
-                      if (r?.ok) { history += `\nFILE ${action.file}:\n${r.text}`; toolResult = { success: true, info: { chars: r.text?.length || 0 } }; }
+                      if (r?.ok) { history += `\nFILE ${action.file}:\n${r.text}`; lastReadFile = action.file; lastResumeFacts = resumeFacts(r.text || ''); toolResult = { success: true, info: { chars: r.text?.length || 0 } }; }
                       else toolResult = { success: false, error: r?.error || 'could not read the file' };
                     }
                   } else if (action.type === 'upload') {
+                    // Sem arquivo dito, mas o agente acabou de ler um da pasta liberada (o currículo escolhido): é esse.
+                    if (!(action as any).file && lastReadFile) (action as any).file = lastReadFile;
                     // Arquivo SÓ do diálogo do SO, escolhido pela pessoa (ou reusado dela nesta tarefa).
                     const target = observation.interactive_elements.find(e => e.id === action.ref);
                     const wcIdUp = (wv as any).getWebContentsId?.();

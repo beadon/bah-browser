@@ -2580,7 +2580,9 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
           if (tId && hId) {
             const rel = await wc.debugger.sendCommand('Runtime.callFunctionOn', {
               objectId: tId,
-              functionDeclaration: 'function(o){return this===o||this.contains(o)||o.contains(this);}',
+              // A <label> on top is the target's own label (it forwards the click), not an overlay —
+              // Ashby/Greenhouse draw the résumé field's label over the "Upload File" button.
+              functionDeclaration: 'function(o){if(this===o||this.contains(o)||o.contains(this))return true;var l=o.closest&&o.closest("label");return !!(l&&(l.contains(this)||l.control===this||(l.parentElement&&l.parentElement.contains(this))));}',
               arguments: [{ objectId: hId }],
               returnByValue: true,
             }) as any;

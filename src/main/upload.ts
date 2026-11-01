@@ -165,6 +165,25 @@ export function setupUpload(getMainWindow: () => BrowserWindow | null, ensureDeb
           await send('Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {});
         }
       }
+      // 3) nada abriu (o botão só chama input.click() por script, ou o script ainda não carregou): o input
+      //    de arquivo escondido da MESMA seção — o ancestral mais próximo que tem exatamente um.
+      if (!target.id && backendNodeId != null) {
+        const objectId = (await send('DOM.resolveNode', { backendNodeId }))?.object?.objectId;
+        if (objectId) {
+          const r = await send('Runtime.callFunctionOn', { objectId, returnByValue: false, functionDeclaration: `function(){
+            for (var el=this.parentElement, k=0; el && el!==document.documentElement && k<8; el=el.parentElement, k++) {
+              var f=el.querySelectorAll('input[type=file]'); if (f.length===1) return f[0]; if (f.length>1) return null;
+            }
+            return null;
+          }` });
+          const fid = r?.result?.objectId;
+          if (fid) {
+            const desc = await send('DOM.describeNode', { objectId: fid });
+            const attrs: string[] = desc?.node?.attributes || [];
+            target = { id: desc?.node?.backendNodeId, multiple: attrs.includes('multiple'), accept: attrs[attrs.indexOf('accept') + 1] && attrs.includes('accept') ? attrs[attrs.indexOf('accept') + 1] : undefined };
+          }
+        }
+      }
       if (!target.id) return { ok: false, error: 'no file upload field found at that element — pick the upload button or the "Choose file" field' };
       const use = target.multiple ? files : files.slice(0, 1);
       await send('DOM.setFileInputFiles', { files: use, backendNodeId: target.id });
