@@ -49,6 +49,7 @@ import { setupSitePermissions } from './site-permissions';
 import { setupRegion, getTimezoneOverride } from './region';
 import { setupUpload, setUploadTextExtractor } from './upload';
 import { attachJsDialogs, setupJsDialogs } from './js-dialogs';
+import { setupFrames } from './frames';
 import { loadSystemCAs, installCAs } from './system-ca';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
@@ -2010,14 +2011,33 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
     }
   });
 
+  // Selecionar tudo no campo com foco (inclusive dentro de iframe): comando de edição via CDP — no macOS
+  // Cmd+A por sendInputEvent não seleciona (é comando de menu, não tecla).
+  ipcMain.handle('input:select-all', async (_e, wcId: number) => {
+    const wc = webContents.fromId(wcId);
+    if (!wc) return { success: false, error: 'webContents not found' };
+    try {
+      await sharedEnsureDebugger(wc, wcId);
+      const mod = process.platform === 'darwin' ? 4 : 2;
+      await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: mod, commands: ['selectAll'] });
+      await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: mod });
+      return { success: true };
+    } catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+  });
   ipcMain.handle('input:key', async (_e, wcId: number, key: string) => {
     const wc = webContents.fromId(wcId);
     if (!wc) return { success: false, error: 'webContents not found' };
     try {
       wc.focus();
-      wc.sendInputEvent({ type: 'keyDown', keyCode: key } as any);
-      wc.sendInputEvent({ type: 'char', keyCode: key } as any);
-      wc.sendInputEvent({ type: 'keyUp', keyCode: key } as any);
+      // Combinação "Meta+A", "Control+Shift+Tab": modificadores + a tecla final. Com Meta/Control não
+      // manda 'char' (senão digita a letra). Sozinha: igual a antes.
+      const parts = String(key).split('+').map(x => x.trim()).filter(Boolean);
+      const MOD: Record<string, string> = { meta: 'meta', cmd: 'meta', command: 'meta', control: 'control', ctrl: 'control', shift: 'shift', alt: 'alt', option: 'alt' };
+      const mods = parts.length > 1 ? parts.slice(0, -1).map(m => MOD[m.toLowerCase()]).filter(Boolean) : [];
+      const k = parts.length > 1 && mods.length === parts.length - 1 ? parts[parts.length - 1] : key;
+      wc.sendInputEvent({ type: 'keyDown', keyCode: k, modifiers: mods } as any);
+      if (!mods.includes('meta') && !mods.includes('control')) wc.sendInputEvent({ type: 'char', keyCode: k, modifiers: mods } as any);
+      wc.sendInputEvent({ type: 'keyUp', keyCode: k, modifiers: mods } as any);
       return { success: true };
     } catch (e: any) {
       return { success: false, error: String(e?.message ?? e) };
@@ -3417,6 +3437,7 @@ app.whenReady().then(async () => {
   setupRegion(applyTimezoneEverywhere, () => mainWindow);
   setupUpload(() => mainWindow, sharedEnsureDebugger);
   setupJsDialogs();
+  setupFrames(sharedEnsureDebugger);
   loadSystemCAs().then((pems) => { systemCAs = pems; const n = installCAs(pems); console.log(`[SystemCA] ${pems.length} OS certificates, ${n} added to Node`); }).catch(() => {});
   {
     const browsingSession = session.fromPartition('persist:browser');

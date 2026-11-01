@@ -93,6 +93,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   realType: (wcId: number, text: string) =>
     ipcRenderer.invoke('input:type', wcId, text),
   abortTyping: () => ipcRenderer.invoke('input:type-abort'),
+  getFramesAx: (wcId: number) => ipcRenderer.invoke('cdp:frames-ax', wcId),
+  getFramesCoords: (wcId: number, key: string, ids: number[]) => ipcRenderer.invoke('cdp:frames-coords', wcId, key, ids),
+  frameClick: (wcId: number, key: string, id: number) => ipcRenderer.invoke('cdp:frame-click', wcId, key, id),
+  frameFill: (wcId: number, key: string, id: number, value: string) => ipcRenderer.invoke('cdp:frame-fill', wcId, key, id, value),
+  selectAll: (wcId: number) => ipcRenderer.invoke('input:select-all', wcId),
   realKey: (wcId: number, key: string) =>
     ipcRenderer.invoke('input:key', wcId, key),
   // Accessibility tree via CDP
