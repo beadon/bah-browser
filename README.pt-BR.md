@@ -53,7 +53,9 @@
 
 **🍎 macOS:** na [mesma página de release](https://github.com/alexvilelabah/bah-browser/releases/latest), pegue o `Bah-*-arm64.dmg` (Apple Silicon: M1 em diante) ou o `Bah-*-x64.dmg` (Intel). Abra e arraste o **Bah** pra Aplicativos.
 
-> ⚠️ O build de Mac ainda não é assinado nem notarizado pela Apple, então na 1ª abertura aparece que o Bah *"está danificado e não pode ser aberto"*. Rode `xattr -cr /Applications/Bah.app` no Terminal uma vez e depois abra o Bah normalmente. Ainda não há atualização automática no macOS: baixe o `.dmg` novo pra atualizar. Pra melhor qualidade ao baixar vídeos, instale o ffmpeg (`brew install ffmpeg`).
+> ⚠️ O build de Mac ainda não é assinado nem notarizado pela Apple, então na 1ª abertura aparece que o Bah *"está danificado e não pode ser aberto"*. Rode `xattr -cr /Applications/Bah.app` no Terminal uma vez e depois abra o Bah normalmente. Ainda não há atualização automática no macOS: baixe o `.dmg` novo pra atualizar.
+
+> 🍺 **Baixar vídeo/áudio no macOS precisa do [Homebrew](https://brew.sh):** `brew install yt-dlp deno ffmpeg` (ou `brew bundle` num clone deste repositório, com o [`Brewfile`](Brewfile)). O build de Mac não baixa programas sozinho; o Homebrew instala e atualiza. O resto do Bah funciona sem eles.
 
 **👨‍💻 Quero mexer no código:** clone e rode — veja [Como rodar](#como-rodar) abaixo.
 
@@ -139,6 +141,10 @@ Atalho Windows: clique duplo em `Abrir-Bah.bat`.
 
 ### Configurar a IA
 
+> **Setup testado (local):** o agente é testado com o `llama-server` do [llama.cpp](https://github.com/ggml-org/llama.cpp) rodando **`Qwen3-VL-8B-Instruct-Q4_K_M.gguf`** ([`unsloth/Qwen3-VL-8B-Instruct-GGUF`](https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF), com o projetor de visão) numa GPU NVIDIA de 16 GB — cabe inteiro na VRAM e é rápido o bastante pra navegar passo a passo:
+> `llama-server -hf unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M -c 32768 -ngl 99 --host 0.0.0.0 --port 8080`
+> No Bah: engrenagem → 🏠 IA Local → endpoint compatível com OpenAI `http://<servidor>:8080/v1`. Com esse modelo o agente faz de forma confiável tarefas de download em várias páginas — ex.: *"baixe a ISO mais recente do ubuntu"* (acha o índice de releases, inicia o download, espera e informa o caminho salvo; ISO conferida com o SHA256 publicado). Use um modelo com visão (variantes `-VL-`): o agente lê a captura de tela além da lista de elementos.
+
 1. Abra o navegador, clique no botão **AI** na barra de endereço.
 2. Engrenagem → escolha o provedor.
 3. Escolha **DeepSeek**, **Mistral** ou **NVIDIA NIM** e cole a chave dele (a da DeepSeek é baratíssima) → Salvar. Gerar imagem funciona sem chave de qualquer jeito; conversar e o agente precisam de uma dessas (ou do Ollama local, próximo passo).
@@ -166,9 +172,11 @@ O agente opera com privilégios de navegador, então vale deixar claro o que ele
 
 - **Limite de 25 passos por comando.** Se a tarefa não concluir em 25 ações, o agente para sozinho.
 
-- **Compatibilidade, não evasão.** A gente se apresenta como Chrome padrão (UA Chrome + mascara `navigator.webdriver`) só pra não ser bloqueado por engano. **Não** burlamos CAPTCHA, não driblamos rate-limit, não automatizamos o que os sites proíbem nos termos.
+- **Compatibilidade, não evasão.** A gente se apresenta como Chrome padrão (UA Chrome + mascara `navigator.webdriver`) só pra não ser bloqueado por engano. **Não** resolvemos CAPTCHA de imagem nem driblamos rate-limit. Por padrão o agente para e pede sua ajuda em qualquer verificação humana; uma chave **opcional** no menu (☑️ *Agente pode clicar em captcha de caixinha*, desligada por padrão) deixa ele clicar uma vez numa caixinha simples "Não sou um robô" / "Verifique que você é humano" — quem decide continua sendo o serviço de captcha, e qualquer coisa além disso (desafio de imagem) volta pra você. Respeite os termos de cada site.
 
 - **🔑 Login do Google — use o botão "Entrar no Google".** O Google bloqueia login *dentro* de navegadores embutidos (Electron/webview). O Bah resolve do jeito certo: clique em **🔑 Entrar no Google** → ele abre o login no seu **Chrome/Edge real** (onde o Google confia), você loga, e o Bah **detecta sozinho**, importa a sessão (cookies via CDP) e fecha a janela de login. Faça **uma vez** e fica logado.
+
+- **📥 Downloads sem limite de tipo ou tamanho.** Qualquer tipo de arquivo pode ser baixado (instaladores inclusive), gravado direto no disco. **Torrents:** por padrão, arquivos `.torrent` baixam como qualquer arquivo e links `magnet:` abrem no app de torrent do sistema; ligue **🧲 Cliente de torrent embutido** no menu pra abrir no card de torrent do próprio Bah. Detalhes em [ARCHITECTURE.pt-BR.md](ARCHITECTURE.pt-BR.md#downloads-e-torrents).
 
 - **Adblock pausa em sites conhecidos.** YouTube e Twitch entram em bypass automático pro player não ser bloqueado pelo anti-adblock deles. No resto, o adblock fica ativo.
 

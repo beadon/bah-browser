@@ -100,6 +100,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('cdp:node-coords', wcId, backendNodeIds),
   verifyClick: (wcId: number, backendNodeId: number) =>
     ipcRenderer.invoke('cdp:verify-click', wcId, backendNodeId),
+  skillsList: () => ipcRenderer.invoke('skills:list'),
+  skillsSave: (markdown: string) => ipcRenderer.invoke('skills:save', markdown),
+  skillsOpenFolder: () => ipcRenderer.invoke('skills:open-folder'),
+  selectOption: (wcId: number, backendNodeId: number, option: string) =>
+    ipcRenderer.invoke('cdp:select-option', wcId, backendNodeId, option),
   fillNode: (wcId: number, backendNodeId: number, value: string) =>
     ipcRenderer.invoke('cdp:fill-node', wcId, backendNodeId, value),
   downloadUrl: (url: string, filename?: string) =>
@@ -117,6 +122,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   torrentSaveFile: (id: string, index: number) => ipcRenderer.invoke('torrent:save-file', id, index),
   torrentRemove: (id: string, destroyStore?: boolean) => ipcRenderer.invoke('torrent:remove', id, destroyStore),
   torrentSetSeed: (on: boolean) => ipcRenderer.invoke('torrent:set-seed', on),
+  torrentSetBuiltin: (on: boolean) => ipcRenderer.invoke('torrent:set-builtin', on),
+  torrentOpen: (uri: string) => ipcRenderer.invoke('torrent:open', uri),
   setYoutubeSkipAds: (on: boolean) => ipcRenderer.invoke('youtube:set-skip-ads', on),
   // Botão "Baixar" em cima do vídeo do YouTube: liga/desliga + os textos no idioma da UI.
   setYoutubeDlButton: (on: boolean, labels?: Record<string, string>) => ipcRenderer.invoke('youtube:set-dl-button', on, labels),

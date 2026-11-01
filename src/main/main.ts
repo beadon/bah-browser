@@ -14,6 +14,7 @@ import { ElectronBlocker, fullLists } from '@ghostery/adblocker-electron';
 // Provado por bissecção: mesmo fetch, mesmo endpoint — global passa, cross-fetch falha.
 import fs from 'fs';
 import path from 'path';
+import { Worker } from 'worker_threads';
 import { AIEngine, AIProvider, setEngineLang, type LocalEndpointOpts } from './ai-engine';
 import { splitDataUrl, type VisionImage } from '../shared/vision';
 import { classifyError } from '../shared/error-codes';
@@ -42,6 +43,7 @@ import { getDownloadDir, downloadRoots } from './download-dir';
 import { setupVideoButton } from './video-button';
 import { setupHwMonitor } from './hw-monitor';
 import { setupTorrentManager } from './torrent-manager';
+import { setupSkills } from './skills-loader';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
 
@@ -188,11 +190,29 @@ const lastAuthPopupAt = new Map<number, number>();
 let authPopupHost = '';
 let reavaliarAdblock: (() => void) | null = null;
 
-const CHROME_VERSION = process.versions.chrome || '130.0.0.0';
-const CHROME_MAJOR = CHROME_VERSION.split('.')[0] || '130';
+// Versão que o Bah declara (UA, sec-ch-ua, navigator.userAgentData) — UMA fonte, sempre igual nos
+// três. Formato reduzido "NNN.0.0.0", como o Chrome manda desde 2023 (o número completo do build,
+// ex. 148.0.7778.271, nenhum Chrome atual manda — entregava que não era Chrome). Major = o maior
+// entre o motor e o Chrome estável atual (o Chromium do Electron fica algumas versões atrás).
+// SUBIR CURRENT_CHROME_MAJOR quando o Chrome estável avançar (~a cada 4 semanas).
+const CURRENT_CHROME_MAJOR = 156;
+const ENGINE_CHROME_MAJOR = Number((process.versions.chrome || '130').split('.')[0]) || 130;
+const CHROME_MAJOR = String(Math.max(ENGINE_CHROME_MAJOR, CURRENT_CHROME_MAJOR));
+const CHROME_VERSION = `${CHROME_MAJOR}.0.0.0`;
+// Mesmos brands que navigator.userAgentData (applyChromeIdentity) — header e JS iguais, na ordem do Chrome.
+const CHROME_SEC_CH_UA = `"Not:A-Brand";v="8", "Chromium";v="${CHROME_MAJOR}", "Google Chrome";v="${CHROME_MAJOR}"`;
 // Keep HTTP UA and JS Client Hints aligned with the Chromium embedded in Electron.
-const CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`;
-const CHROME_SEC_CH_UA = `"Google Chrome";v="${CHROME_MAJOR}", "Not;A=Brand";v="8", "Chromium";v="${CHROME_MAJOR}"`;
+// Plataforma REAL (era sempre "Windows"): site que detecta o SO — página de driver/instalador —
+// oferecia o arquivo de Windows num Mac. Os tokens são os fixos do Chrome de verdade em cada SO
+// (no Mac o Chrome manda "Intel Mac OS X 10_15_7" até em Apple Silicon).
+const UA_PLATFORM_TOKEN = process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7'
+  : process.platform === 'linux' ? 'X11; Linux x86_64' : 'Windows NT 10.0; Win64; x64';
+const CH_PLATFORM = process.platform === 'darwin' ? 'macOS' : process.platform === 'linux' ? 'Linux' : 'Windows';
+// Arquitetura REAL pros Client Hints (site de instalador escolhe arm64 × x64 por aqui; o UA do
+// Mac é "Intel" fixo até em Apple Silicon). Build x64 no Rosetta → o hardware é ARM.
+const CH_ARCH = process.arch === 'arm64' || app.runningUnderARM64Translation ? 'arm' : 'x86';
+const CH_BITNESS = process.arch === 'ia32' ? '32' : '64';
+const CHROME_UA = `Mozilla/5.0 (${UA_PLATFORM_TOKEN}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`;
 const BROWSER_PARTITION = 'persist:browser';
 const GOOGLE_LOGIN_PARTITION = 'persist:google-login';
 
@@ -207,7 +227,46 @@ async function sharedEnsureDebugger(wc: Electron.WebContents, wcId: number): Pro
     }
     debuggerAttachedSet.add(wcId);
     wc.once('destroyed', () => debuggerAttachedSet.delete(wcId));
+    wc.debugger.once('detach', () => debuggerAttachedSet.delete(wcId));   // reanexa (e reaplica a identidade) depois
     await wc.debugger.sendCommand('Accessibility.enable');
+    await applyChromeIdentity(wc);
+  }
+}
+
+// Identidade do navegador DE DENTRO do motor (CDP Emulation.setUserAgentOverride): UA, os headers
+// sec-ch-ua (ordem e formato nativos), navigator.userAgentData (brands, versões, plataforma, arch) e
+// Accept-Language + navigator.languages saem TODOS da mesma fonte, antes de qualquer script da
+// página. Antes: header reescrito à mão + navigator remendado no dom-ready — a página lia o valor
+// real ("Chromium 148") antes do remendo, e a contradição (header Chrome 156 × JS Chromium 148) é
+// sinal clássico de adulteração.
+async function applyChromeIdentity(wc: Electron.WebContents): Promise<void> {
+  const brands = [
+    { brand: 'Not:A-Brand', version: '8' },
+    { brand: 'Chromium', version: CHROME_MAJOR },
+    { brand: 'Google Chrome', version: CHROME_MAJOR },
+  ];
+  let platformVersion = '';
+  try { platformVersion = process.getSystemVersion(); } catch {}
+  try {
+    await wc.debugger.sendCommand('Emulation.setUserAgentOverride', {
+      userAgent: CHROME_UA,
+      acceptLanguage: NAV_LANGUAGES.join(','),   // lista simples → navigator.languages = ["en-US","en"]
+      platform: process.platform === 'darwin' ? 'MacIntel' : process.platform === 'win32' ? 'Win32' : 'Linux x86_64',
+      userAgentMetadata: {
+        brands,
+        fullVersionList: brands.map(b => ({ brand: b.brand, version: b.brand === 'Not:A-Brand' ? '8.0.0.0' : CHROME_VERSION })),
+        fullVersion: CHROME_VERSION,
+        platform: CH_PLATFORM,
+        platformVersion,
+        architecture: CH_ARCH,
+        model: '',
+        mobile: false,
+        bitness: CH_BITNESS,
+        wow64: false,
+      },
+    });
+  } catch (e: any) {
+    console.warn('[Identity] setUserAgentOverride failed:', e?.message || e);
   }
 }
 
@@ -831,6 +890,9 @@ function createWindow(): void {
     minHeight: 600,
     frame: false,
     titleBarStyle: 'hidden',
+    // macOS: os botões nativos (semáforo) ficam; centraliza na barra de abas de 40px. Os botões
+    // desenhados pelo app (− ☐ ✕) somem no Mac (CSS .platform-mac) — senão ficavam 2 conjuntos.
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 14, y: 13 } } : {}),
     autoHideMenuBar: true,
     show: false,   // só mostra no ready-to-show → abre já pintada, sem flash/janela vazia
     backgroundColor: '#1f1e1d',
@@ -925,6 +987,8 @@ function createWindow(): void {
   // Attach context menu + popup-as-new-tab handler + UA override to webviews when they're created
   mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
     wc.setUserAgent(CHROME_UA);
+    // Identidade Chrome nativa (UA + client hints + userAgentData + idiomas) já na criação da aba.
+    sharedEnsureDebugger(wc, wc.id).catch((e) => console.warn('[Identity] attach failed:', e?.message || e));
     // Fundo ESCURO do webview antes da página pintar — mata o "flash branco" ao abrir aba/site novo
     // (a UI é escura; sem isto o Chromium pinta BRANCO até o 1º frame da página). Igual ao Chrome.
     try { (wc as any).setBackgroundColor('#262624'); } catch {}
@@ -985,8 +1049,9 @@ function createWindow(): void {
     wc.setWindowOpenHandler((details) => {
       const url = details.url;
       if (!url || url === 'about:blank') return { action: 'deny' };
-      // window.open('magnet:…') / link .torrent que abre em nova janela → card, não aba.
-      if (/^magnet:/i.test(url) || /\.torrent(\?|#|$)/i.test(url)) { torrentManager?.handleUri(url); return { action: 'deny' }; }
+      // window.open('magnet:…') → card (ou app do sistema), não aba. Link .torrent só vira card
+      // com o cliente embutido ligado; senão baixa como arquivo normal.
+      if (/^magnet:/i.test(url) || (torrentManager?.builtinEnabled() && /\.torrent(\?|#|$)/i.test(url))) { torrentManager?.handleUri(url); return { action: 'deny' }; }
       // Safe browsing na popup
       try {
         const u = new URL(url);
@@ -1083,10 +1148,11 @@ function createWindow(): void {
     wc.on('will-navigate', (e, url) => {
       try {
         const u = new URL(url);
-        // Magnet / .torrent → abre o card "Salvar ou Tocar" (não navega). O motor de
-        // torrent fica isolado num utilityProcess; aqui só avisamos o renderer.
+        // Magnet → card "Salvar ou Tocar" com o cliente embutido ligado, senão o app de torrent
+        // do sistema (não navega). Link .torrent: card só com o embutido ligado; senão segue
+        // pro will-download e é salvo em Downloads como qualquer arquivo.
         if (u.protocol === 'magnet:') { e.preventDefault(); torrentManager?.handleUri(url); return; }
-        if (/\.torrent(\?|#|$)/i.test(u.pathname)) { e.preventDefault(); torrentManager?.handleUri(url); return; }
+        if (torrentManager?.builtinEnabled() && /\.torrent(\?|#|$)/i.test(u.pathname)) { e.preventDefault(); torrentManager?.handleUri(url); return; }
         if (maliciousHosts.has(u.hostname)) {
           e.preventDefault();
           mainWindow?.webContents.send('safe-browsing-block', { url, host: u.hostname });
@@ -1369,6 +1435,8 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   ipcMain.handle('ai:chat', async (_event, message: string, pageContent?: string, stateless?: boolean, local?: boolean, tabId?: string, rawContext?: string, streamId?: string, image?: VisionImage) => {
     // Em modo IA Local, chat e pesquisa usam o MODELO LOCAL (offline, sem chave).
     // Só cai na nuvem quando o modo local está desligado. (rawContext = doc anexado.)
+    // E2E: resposta fixa de chat (E2E_MOCK_CHAT) — pra testar fluxos que pedem um texto ao modelo.
+    if (process.env.E2E_MOCK_AI === '1' && process.env.E2E_MOCK_CHAT) return { response: process.env.E2E_MOCK_CHAT };
     const engine = (local && localEngine) ? localEngine : aiEngine;
     if (!engine) return { error: 'AI not configured. Open the settings.' };
     image = visionImageToJpeg(image);
@@ -1447,6 +1515,27 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   });
   ipcMain.handle('ai:action', async (_event, command: string, pageContent?: string, screenshot?: VisionImage, tier?: 'local' | 'flash' | 'pro', actionId?: string) => {
     if (process.env.E2E_MOCK_AI === '1') {
+      // E2E_MOCK_SCRIPT = JSON array of actions: returned one per step (then done), and every
+      // prompt is kept in global.__e2ePrompts so a test can assert what the agent was shown.
+      if (process.env.E2E_MOCK_SCRIPT) {
+        const g = global as any;
+        g.__e2ePrompts = [...(g.__e2ePrompts || []), `${command}\n<<<PAGE>>>\n${pageContent ?? ''}`];
+        const script = JSON.parse(process.env.E2E_MOCK_SCRIPT);
+        let a = script[g.__e2ePrompts.length - 1] ?? { type: 'done', reason: 'E2E script finished.', success: true };
+        // "ref": "__REF:<text>__" → the [N] of the first listed element whose line contains <text>.
+        if (typeof a.ref === 'string' && a.ref.startsWith('__REF:')) {
+          const want = a.ref.slice(6, -2).toLowerCase();
+          const line = String(pageContent ?? '').split('\n').find(l => /^\s*\*?\[\d+\]/.test(l) && l.toLowerCase().includes(want));
+          a = { ...a, ref: line ? Number((line.match(/\[(\d+)\]/) || [])[1]) : -1 };
+        }
+        return {
+          thought: `E2E script step ${g.__e2ePrompts.length}`,
+          evaluation: 'Success - e2e script',
+          action: a,
+          _engine: 'e2e-mock',
+          metrics: { latencyMs: 1, model: 'e2e-mock', usage: { prompt_tokens: 0, completion_tokens: 0 } },
+        };
+      }
       return {
         thought: 'E2E mock: confirming the current browser state.',
         evaluation: 'Success - e2e mock response',
@@ -1905,11 +1994,58 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   //   stale=true   → element no longer exists (caller should re-observe)
   //   covered=true → an unrelated element is on top at the click point
   //   x, y         → fresh center coordinates to click (use instead of cached ones)
+  // <select> nativo: escolhe a opção NO PRÓPRIO nó (pelo texto exato, parcial ou value) e dispara
+  // input/change como a escolha de verdade — combobox de SO/versão em site de driver etc. Erra →
+  // devolve as opções disponíveis pro modelo tentar de novo.
+  ipcMain.handle('cdp:select-option', async (_e, wcId: number, backendNodeId: number, option: string) => {
+    const wc = webContents.fromId(wcId);
+    if (!wc) return { ok: false, error: 'webContents not found' };
+    try {
+      await ensureDebugger(wc, wcId);
+      const obj = await wc.debugger.sendCommand('DOM.resolveNode', { backendNodeId }) as any;
+      const objectId = obj?.object?.objectId;
+      if (!objectId) return { ok: false, error: 'element no longer exists — re-observe the page' };
+      const r = await wc.debugger.sendCommand('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: `function(want) {
+          const sel = this.tagName === 'SELECT' ? this : (this.querySelector && this.querySelector('select'));
+          if (!sel) return { ok: false, error: 'not a <select> drop-down — click it, then click the option' };
+          const opts = Array.from(sel.options);
+          const norm = s => String(s || '').trim().toLowerCase();
+          const w = norm(want);
+          const o = opts.find(x => norm(x.text) === w) || opts.find(x => norm(x.value) === w)
+            || opts.find(x => norm(x.text).includes(w)) || opts.find(x => w.includes(norm(x.text)) && norm(x.text).length > 2);
+          const list = opts.map(x => x.text.trim()).filter(Boolean).slice(0, 40);
+          if (!o) return { ok: false, error: 'no option matching "' + want + '"', options: list };
+          sel.focus();
+          sel.value = o.value;
+          o.selected = true;
+          sel.dispatchEvent(new Event('input', { bubbles: true }));
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          return { ok: true, selected: o.text.trim(), options: list };
+        }`,
+        arguments: [{ value: String(option ?? '') }],
+        returnByValue: true,
+      }) as any;
+      wc.debugger.sendCommand('Runtime.releaseObject', { objectId }).catch(() => {});
+      return r?.result?.value ?? { ok: false, error: 'select failed' };
+    } catch (e: any) {
+      return { ok: false, error: String(e?.message ?? e) };
+    }
+  });
+
   ipcMain.handle('cdp:verify-click', async (_e, wcId: number, backendNodeId: number) => {
     const wc = webContents.fromId(wcId);
     if (!wc) return { error: 'webContents not found' };
     try {
       await ensureDebugger(wc, wcId);
+      // 0. Bring THIS node into the viewport first (no-op when already visible). Without it a
+      // target below the fold measured off-screen and the renderer fell back to click_text by
+      // label — ambiguous when many links share it (ubuntu.com: six "Download" buttons).
+      try {
+        await wc.debugger.sendCommand('DOM.scrollIntoViewIfNeeded', { backendNodeId });
+        await new Promise(r => setTimeout(r, 120));
+      } catch { /* detached/stale — the box model below reports it */ }
       // 1. Fresh bounding box of the intended target
       let box: any = null;
       try {
@@ -2013,9 +2149,8 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
     }
   });
 
-  // ═══ Agent-driven file download (images, pdfs...) into the user's Downloads ═══
-  // Executables are blocked by extension AND by content sniffing of the first bytes.
-  const BLOCKED_EXTENSIONS = /\.(exe|msi|bat|cmd|scr|com|pif|apk|dmg|pkg|deb|rpm|js|jse|vbs|vbe|wsf|ps1|jar|lnk|hta)(\?|#|$)/i;
+  // ═══ Agent-driven file download into the user's Downloads ═══
+  // Any file type is allowed (no extension blocklist / executable sniffing).
 
   // Attach a DOCUMENT (PDF/Word/Markdown/txt) to ask about it: native dialog → extract
   // the text → the renderer sends it as chat context (works with ANY text model, free).
@@ -2451,13 +2586,30 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   }
   // Gerenciador de download nativo (Fase A): pausar/continuar/cancelar/retomar,
   // velocidade+ETA, fila com limite. Registry por id vive no módulo dedicado.
+  // Downloads da ação `download` do agente em andamento (id → worker), pro ✕ do painel cancelar.
+  const agentDownloads = new Map<string, Worker>();
   const downloadManager = setupDownloadManager({
     getMainWindow: () => mainWindow,
     uniqueDownloadPath,
-    blockedExtensions: BLOCKED_EXTENSIONS,
+    blockDuplicates: () => agentBusy,
+    cancelExternal: (id) => {
+      const w = agentDownloads.get(id);
+      if (!w) return false;
+      w.postMessage({ t: 'cancel' });
+      return true;
+    },
+    // Cliente de torrent embutido ligado → .torrent vira card em vez de arquivo, venha de onde vier
+    // (link, barra de endereço, agente). Desligado → baixa como qualquer arquivo.
+    interceptDownload: (url, filename) => {
+      if (!torrentManager?.builtinEnabled() || !/\.torrent$/i.test(filename)) return false;
+      torrentManager.handleUri(url);
+      return true;
+    },
   });
   downloadManager.attach(session.fromPartition('persist:browser'));
   downloadManager.attach(session.defaultSession);
+  // Skills de navegação (skills/*/SKILL.md) pro agente.
+  setupSkills();
   // Medidor do computador na barra de cima (CPU, RAM, placa de vídeo) — só mede quando ligado e visível.
   setupHwMonitor({ getMainWindow: () => mainWindow });
   // Botão "Baixar" em cima do vídeo do YouTube: escolhe a resolução e o download entra na
@@ -2468,121 +2620,66 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   });
   // Estilo IDM: anota os vídeos/streams que as abas carregam (pros sites que o yt-dlp não conhece).
   videoButton.attachSniffer(session.fromPartition('persist:browser'));
-  // Torrent (magnet/.torrent) — motor isolado num utilityProcess; reusa Downloads + trava de exe.
+  // Torrent (magnet/.torrent) — motor isolado num utilityProcess; reusa Downloads.
   torrentManager = setupTorrentManager({
     getMainWindow: () => mainWindow,
     uniqueDownloadPath,
-    blockedExtensions: BLOCKED_EXTENSIONS,
   });
-  ipcMain.handle('download:url', async (_e, url: string, filename?: string) => {
+  // ═══ Ação `download` do agente — roda numa worker thread (agent-download-worker.ts) ═══
+  // Devolve assim que o download COMEÇA (caminho final + tamanho) e segue em background. O
+  // resto chega como 'agent:download-event' (kind 'agent'): progresso a cada 1s pro painel,
+  // `notify` na cadência do ETA pro agente, stall, e completed/failed/cancelled com o caminho.
+  let agentDlSeq = 0;
+  ipcMain.handle('download:url', (_e, url: string, filename?: string) => {
+    if (!/^https?:\/\//i.test(url)) return { success: false, error: 'Only http(s) URLs can be downloaded.' };
+    const id = `agdl_${++agentDlSeq}`;
+    // Empacotado: o worker roda do app.asar.unpacked (ver asarUnpack). Em dev o replace é no-op.
+    const workerPath = path.join(__dirname, 'agent-download-worker.js').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+    let worker: Worker;
     try {
-      if (!/^https?:\/\//i.test(url)) return { success: false, error: 'Only http(s) URLs can be downloaded.' };
-      if (BLOCKED_EXTENSIONS.test(url) || (filename && BLOCKED_EXTENSIONS.test(filename))) {
-        return { success: false, error: 'Blocked: executable/script files cannot be downloaded by the agent.' };
-      }
-      // Full browser-like headers: Wikimedia (and many CDNs) reject generic/partial
-      // User-Agents with 429/403. Referer helps with hotlink protection.
-      const dlHeaders = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Accept-Language': ACCEPT_LANGUAGE,
-        'Referer': new URL(url).origin + '/',
-      };
-      // Many .gov.br / older sites have an incomplete TLS cert chain ("unable to verify
-      // the first certificate"). Try strict first; on a cert error retry tolerantly
-      // (the file's MZ/executable checks below still protect the user).
-      const dlCtrl = new AbortController();
-      const dlTimer = setTimeout(() => { try { dlCtrl.abort(); } catch {} }, 60000);   // teto de 60s: servidor lento/infinito nao trava o main
-      // O fetch nativo IGNORA a opção `agent` — ela só existia no node-fetch, que saiu daqui
-      // (ver o comentário do topo). Sem isto, a retentativa "tolerante" refazia a requisição
-      // idêntica e falhava de novo: um no-op silencioso. O caminho tolerante passa a usar o
-      // módulo https direto, que aceita rejectUnauthorized de verdade. A resposta dele já é
-      // async-iterável e tem .headers, então o resto do código abaixo funciona igual.
-      const doFetch = (lenient: boolean): Promise<any> => {
-        if (!(lenient && url.startsWith('https:'))) {
-          return fetch(url, { headers: dlHeaders, signal: dlCtrl.signal } as any);
-        }
-        return new Promise((resolve, reject) => {
-          const req = require('https').get(url, { headers: dlHeaders, rejectUnauthorized: false }, (r: any) => {
-            resolve({
-              ok: r.statusCode >= 200 && r.statusCode < 300,
-              status: r.statusCode,
-              headers: { get: (k: string) => r.headers[String(k).toLowerCase()] ?? null },
-              body: r,
-            });
-          });
-          req.on('error', reject);
-          dlCtrl.signal.addEventListener('abort', () => { try { req.destroy(); } catch {} }, { once: true });
-        });
-      };
-      let res: any;
-      try {
-        res = await doFetch(false);
-      } catch (e: any) {
-        if (/certificate|unable to verify|self.signed|CERT_|altname|ERR_TLS/i.test(String(e?.message))) {
-          console.warn('[Download] TLS cert issue → retrying tolerantly:', url);
-          res = await doFetch(true);
-        } else throw e;
-      }
-      if (res.status === 429 || res.status === 403) {
-        await new Promise(r => setTimeout(r, 2500));
-        res = await doFetch(false).catch(() => doFetch(true));
-      }
-      if (!res.ok) { clearTimeout(dlTimer); return { success: false, error: `HTTP ${res.status}` }; }
-      // Teto de 100MB ANTES de bufferizar: Content-Length corta cedo; sem ele, lê em stream e
-      // aborta ao passar do teto (evita OOM quando o servidor manda/mente um arquivo gigante).
-      const MAX_DL = 100 * 1024 * 1024;
-      if (Number(res.headers.get('content-length') || 0) > MAX_DL) {
-        // `.destroy()` só existia no corpo do node-fetch; o corpo do fetch nativo é um
-        // ReadableStream da web e não tem esse método — a chamada virava no-op silencioso e
-        // a conexão seguia baixando o arquivo gigante que a gente acabou de recusar.
-        // O AbortController já está aqui e derruba de verdade, nos dois caminhos.
-        clearTimeout(dlTimer); try { dlCtrl.abort(); } catch {}
-        return { success: false, error: 'File larger than 100MB — refused.' };
-      }
-      let buf: Buffer;
-      if (res.body && typeof (res.body as any)[Symbol.asyncIterator] === 'function') {
-        const chunks: Buffer[] = []; let total = 0;
-        try {
-          for await (const chunk of res.body as any) {
-            total += chunk.length;
-            if (total > MAX_DL) { try { dlCtrl.abort(); } catch {} return { success: false, error: 'File larger than 100MB — refused.' }; }
-            chunks.push(Buffer.from(chunk));
-          }
-        } finally { clearTimeout(dlTimer); }
-        buf = Buffer.concat(chunks);
-      } else {
-        buf = Buffer.from(await res.arrayBuffer());
-        clearTimeout(dlTimer);
-        if (buf.length > MAX_DL) return { success: false, error: 'File larger than 100MB — refused.' };
-      }
-      if (buf.length === 0) return { success: false, error: 'Empty file.' };
-      // Content sniff: block Windows executables regardless of extension (MZ header)
-      if (buf.length > 2 && buf[0] === 0x4d && buf[1] === 0x5a) {
-        return { success: false, error: 'Blocked: file content is a Windows executable.' };
-      }
-      // Derive a safe filename: explicit > URL basename > content-type guess
-      const ctype = res.headers.get('content-type') || '';
-      const extFromType = ctype.includes('jpeg') ? '.jpg' : ctype.includes('png') ? '.png'
-        : ctype.includes('webp') ? '.webp' : ctype.includes('gif') ? '.gif'
-        : ctype.includes('svg') ? '.svg' : ctype.includes('pdf') ? '.pdf' : '';
-      let base = (filename || decodeURIComponent(new URL(url).pathname.split('/').pop() || '') || 'download')
-        .replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
-      if (!/\.[a-z0-9]{2,5}$/i.test(base) && extFromType) base += extFromType;
-      if (!/\.[a-z0-9]{2,5}$/i.test(base)) base += '.bin';
-      const dir = getDownloadDir();
-      let target = path.join(dir, base);
-      // Never overwrite: suffix (1), (2)...
-      for (let i = 1; fs.existsSync(target) && i < 100; i++) {
-        const dot = base.lastIndexOf('.');
-        target = path.join(dir, `${base.slice(0, dot)} (${i})${base.slice(dot)}`);
-      }
-      fs.writeFileSync(target, buf);
-      console.log(`[Download] saved ${buf.length} bytes → ${target}`);
-      return { success: true, info: { path: target, bytes: buf.length, contentType: ctype } };
+      worker = new Worker(workerPath, { workerData: { url, filename, dir: getDownloadDir(), acceptLanguage: ACCEPT_LANGUAGE } });
     } catch (e: any) {
-      return { success: false, error: String(e?.message ?? e) };
+      return { success: false, error: 'download worker failed to start: ' + String(e?.message ?? e) };
     }
+    agentDownloads.set(id, worker);
+    let started = false;
+    let fname = filename || 'download';
+    let totalBytes = 0;
+    const send = (state: string, extra: Record<string, unknown>) => {
+      try { mainWindow?.webContents.send('agent:download-event', { id, kind: 'agent', url, filename: fname, totalBytes, ...extra, state }); } catch {}
+    };
+    return new Promise((resolve) => {
+      let answered = false;
+      const answer = (r: any) => { if (!answered) { answered = true; resolve(r); } };
+      worker.on('message', (m: any) => {
+        const { t, ...data } = m || {};
+        if (t === 'started') {
+          started = true;
+          fname = path.basename(data.path);
+          totalBytes = data.totalBytes || 0;
+          send('started', { path: data.path, bytes: 0, notify: true });
+          answer({ success: true, info: { id, path: data.path, totalBytes, contentType: data.contentType, background: true } });
+        } else if (t === 'progress') {
+          send('progress', data);
+        } else if (t === 'completed') {
+          console.log(`[Download] saved ${data.bytes} bytes → ${data.path}`);
+          send('completed', { path: data.path, bytes: data.bytes, notify: true });
+          answer({ success: true, info: { id, path: data.path, bytes: data.bytes, contentType: data.contentType } });
+        } else if (t === 'failed' || t === 'cancelled') {
+          // Antes do 'started' a falha volta só como resultado da ação (sem linha no painel).
+          if (started) send(t, { path: data.path, bytes: data.bytes, reason: data.error, stalled: !!data.stalled, notify: true });
+          answer({ success: false, error: t === 'cancelled' ? 'cancelled' : data.error });
+        }
+      });
+      worker.on('error', (e: any) => {
+        if (started) send('failed', { reason: String(e?.message ?? e), notify: true });
+        answer({ success: false, error: String(e?.message ?? e) });
+      });
+      worker.on('exit', () => {
+        agentDownloads.delete(id);
+        answer({ success: false, error: 'download worker exited' });
+      });
+    });
   });
 
   // (Importação de cookies do Chrome REMOVIDA: dependia do módulo nativo win-dpapi, que não
@@ -3008,22 +3105,7 @@ const STEALTH_SCRIPT = `
       configurable: true,
     });
 
-    // 2.5. navigator.userAgentData (Crucial para login do Google)
-    Object.defineProperty(navigator, 'userAgentData', {
-      get: () => ({
-        brands: [
-          { brand: 'Google Chrome', version: '${CHROME_MAJOR}' },
-          { brand: 'Not;A=Brand', version: '8' },
-          { brand: 'Chromium', version: '${CHROME_MAJOR}' }
-        ],
-        mobile: false,
-        platform: 'Windows'
-      }),
-      configurable: true
-    });
-
-    // 3. languages
-    Object.defineProperty(navigator, 'languages', { get: () => ${JSON.stringify(NAV_LANGUAGES)}, configurable: true });
+    // (userAgentData e languages: nativos via applyChromeIdentity — CDP setUserAgentOverride.)
 
     // 4. window.chrome — populate with realistic structure
     if (!window.chrome) window.chrome = {};
@@ -3271,14 +3353,33 @@ app.whenReady().then(async () => {
   // O login do Google é feito numa JANELA normal (google:login), que compartilha esta
   // sessão persist:browser → os cookies caem aqui e o webview fica logado.
   const filter = { urls: ['<all_urls>'] };
+  // Ordem dos headers igual à do Chrome (o Electron não manda sec-ch-ua sozinho, e os que a gente
+  // acrescentava iam pro FIM — ordem é parte da "assinatura" de um navegador).
+  const CHROME_HEADER_ORDER = ['host', 'connection', 'content-length', 'pragma', 'cache-control', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform',
+    'upgrade-insecure-requests', 'origin', 'content-type', 'user-agent', 'accept', 'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-user',
+    'sec-fetch-dest', 'referer', 'accept-encoding', 'accept-language', 'cookie', 'priority'];
+  const orderHeaders = (h: Record<string, string>): Record<string, string> => {
+    const byLower = new Map(Object.keys(h).map(k => [k.toLowerCase(), k] as [string, string]));
+    const out: Record<string, string> = {};
+    for (const name of CHROME_HEADER_ORDER) { const k = byLower.get(name); if (k) { out[k] = h[k]; byLower.delete(name); } }
+    for (const k of byLower.values()) out[k] = h[k];
+    return out;
+  };
   const applyHeaders = (details: any, callback: any) => {
     const headers = { ...details.requestHeaders };
     headers['User-Agent'] = CHROME_UA;
     headers['Accept-Language'] = ACCEPT_LANGUAGE;
-    headers['sec-ch-ua'] = CHROME_SEC_CH_UA;
-    headers['sec-ch-ua-mobile'] = '?0';
-    headers['sec-ch-ua-platform'] = '"Windows"';
-    callback({ requestHeaders: headers });
+    // Brand hints: os mesmos valores de navigator.userAgentData (applyChromeIdentity). Só em https
+    // e localhost (o Chrome não manda client hints em http comum).
+    if (/^https:|^http:\/\/(localhost|127\.0\.0\.1)/i.test(details.url || '')) {
+      headers['sec-ch-ua'] = CHROME_SEC_CH_UA;
+      headers['sec-ch-ua-mobile'] = '?0';
+      headers['sec-ch-ua-platform'] = `"${CH_PLATFORM}"`;
+    }
+    // sec-ch-ua-arch/bitness NÃO vão em toda requisição: o Chrome de verdade só manda quando o
+    // site pede (Accept-CH). Mandar sempre fazia o Bah destoar do Chrome (LinkedIn devolveu 403).
+    // A arquitetura continua disponível via navigator.userAgentData.getHighEntropyValues().
+    callback({ requestHeaders: orderHeaders(headers) });
   };
   session.defaultSession.webRequest.onBeforeSendHeaders(filter, applyHeaders);
   persistSession.webRequest.onBeforeSendHeaders(filter, applyHeaders);
@@ -3407,8 +3508,12 @@ app.on('before-quit', () => {
   import('./ocr-engine').then(m => m.terminateOcrWorkers()).catch(() => {});
 });
 
+// Fechar a janela SAI do app em todo SO — inclusive no macOS, onde o padrão seria ficar
+// vivo no Dock sem janela. O Bah é de janela única: vivo e invisível, ele segurava o perfil
+// e abrir de novo podia subir uma 2ª instância no mesmo perfil. (Bandeja ligada: o close
+// só esconde a janela, então isto nem dispara.)
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  app.quit();
 });
 
 app.on('activate', () => {

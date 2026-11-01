@@ -138,7 +138,31 @@ function sanitizeForJson(s: string): string {
   return out;
 }
 
-const BROWSER_AGENT_SYSTEM_PROMPT = `You are an AI browser agent embedded in a web browser. You operate the page by choosing exactly one structured browser tool per step.
+// O computador e a região da pessoa — "drivers pra minha máquina", "o instalador certo pro meu
+// PC". Sem isto o modelo chutava (SO errado; site do Brasil/pt por causa dos exemplos em pt).
+function machineBlock(): string {
+  // Build x64 rodando no Rosetta num Mac M-series: o hardware é Apple Silicon.
+  let rosetta = false;
+  try { rosetta = !!require('electron').app?.runningUnderARM64Translation; } catch {}
+  const arch = process.arch === 'arm64' || rosetta ? (process.platform === 'darwin' ? 'Apple Silicon (arm64)' : 'ARM64') : process.arch === 'x64' ? 'x86-64 (Intel/AMD 64-bit)' : process.arch;
+  let osName: string = process.platform;
+  let region = '';
+  try {
+    const ver = typeof (process as any).getSystemVersion === 'function' ? (process as any).getSystemVersion() : '';
+    osName = process.platform === 'darwin' ? `macOS ${ver}`.trim() : process.platform === 'win32' ? `Windows ${ver}`.trim() : `Linux ${ver}`.trim();
+    const { app } = require('electron');
+    const country = app?.getLocaleCountryCode?.() || '';
+    const locale = app?.getSystemLocale?.() || app?.getLocale?.() || '';
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    region = [country && `country ${country}`, locale && `locale ${locale}`, tz && `time zone ${tz}`].filter(Boolean).join(', ');
+  } catch {}
+  return `USER'S COMPUTER: ${osName}, ${arch}${region ? `. USER'S REGION: ${region}` : ''}.
+- When the user says "my machine", "my computer", "my PC/Mac" or asks for drivers, software or an installer without naming an OS, pick the download for THIS operating system and architecture. On driver sites choose this OS in the OS selector — if the page shows another OS (e.g. Windows downloads) or an OS/version drop-down, change it FIRST with select_option (e.g. option "macOS 26.x"), then pick the download; do not accept a different OS the site pre-selected.
+- On sites with a country/language choice (vendor support, stores), use the user's region above — not Brazil/Portuguese unless that IS the region.
+- Do not invent deep URLs with ids/product keys you have not seen (they lead to error pages) — URL patterns given in SKILLS are the exception. Otherwise start from the site's home or support page and use its search box with the product/model name.`;
+}
+
+const BROWSER_AGENT_BASE_PROMPT = `You are an AI browser agent embedded in a web browser. You operate the page by choosing exactly one structured browser tool per step.
 
 You MUST return ONLY a JSON object with this EXACT shape — no other keys, no nested wrappers, no arrays:
 {
@@ -179,7 +203,9 @@ Never generate JavaScript, CSS selectors unless using the fill tool selector fie
 - extract_images: { "action": "extract_images", "min_width"?: number } — lists the <img> elements of the CURRENT page. Only use when the user wants an image from a SPECIFIC website they named; otherwise use search_images.
 - harvest_images: { "action": "harvest_images", "query": string, "count"?: number, "min_width"?: number } — image harvest: scrapes a search engine (DuckDuckGo/Bing) and downloads N images (1 to 100) into Downloads/<theme>/ in parallel. Use for "baixe N imagens de X", "quero 20 fotos de Y". Set min_width 1000 for "alta qualidade/HD". One action does everything (harvest + parallel download), shows thumbnails and auto-finishes. Prefer this whenever the user wants to DOWNLOAD images.
 - generate_image: { "action": "generate_image", "prompt": string, "count"?: 1-4 } — GENERATES new images from a text description (Pollinations, free, no key). For "gere/crie/desenhe uma imagem de X", "generate an image of Y". Saves to Downloads and shows thumbnails; one action, auto-finishes. This CREATES images — different from harvest_images, which downloads EXISTING ones from search.
-- download: { "action": "download", "url": string, "filename"?: string } — downloads a file (image, pdf, etc.) from a direct URL into the user's Downloads folder. Executable files are blocked. Use the URLs returned by extract_images. May be batched in "actions" to download several files in one step.
+- download: { "action": "download", "url": string, "filename"?: string } — downloads a file of ANY type and size (image, pdf, zip, .torrent, ISO, installers, etc.) from a direct URL into the user's Downloads folder. Use the URLs returned by extract_images. May be batched in "actions" to download several files in one step. It runs in the BACKGROUND: the action returns at once with "DOWNLOAD STARTED ... <full path>"; later steps show DOWNLOAD PROGRESS (%, speed, ETA), DOWNLOAD STALLED, DOWNLOAD COMPLETED (with the file's full local path — use that path if you need to open/use the file) or DOWNLOAD FAILED lines. Never say a file was downloaded before you see DOWNLOAD COMPLETED. While a download runs, the page is NOT stuck — the file downloads in the background whatever the page shows. If the task needs the finished file and the ETA is short (under ~3 min), use { "action": "wait", "ms": 60000 } (max 60000) — the wait ends EARLY as soon as the download completes or fails — and repeat until DOWNLOAD COMPLETED; if the ETA is long, finish and tell the user it is downloading in the background (Downloads panel, Cmd/Ctrl+J) and where it will be saved. On DOWNLOAD FAILED (stalled), retry once or use another mirror/source. The same applies when a CLICK starts a download (DOWNLOAD STARTED appears after clicking a link): STARTED means in progress, not done.
+- list_downloads: { "action": "list_downloads" } — lists the Downloads panel queue: every download (active first) with its [id], state (DOWNLOADING / QUEUED / PAUSED / STALLED / COMPLETED / FAILED / CANCELLED), %, size, speed, ETA, full local path and who started it (agent/user). Use it to check whether a file is already downloading or already downloaded before starting it again, or to find a file's path.
+- cancel_download / pause_download / resume_download / retry_download: { "action": "cancel_download", "id": "<id from list_downloads, or the file name>" } — controls one download. pause/resume work on normal downloads (not agent or video downloads); retry only for FAILED or CANCELLED ones. Cancelling a download the user started asks the user first. Only cancel/pause when the user asks or a download is clearly wrong (e.g. a duplicate you started by mistake).
 - download_video: { "action": "download_video", "query"?: string, "url"?: string, "audio_only"?: boolean, "count"?: number } — downloads a video/song. BEST: pass "query" (e.g. the song/video name) and it finds AND downloads the top YouTube result directly — no need to open YouTube or click results. Or pass "url", or omit both to grab the currently open tab. Set audio_only:true to save as mp3 (for "baixar música/áudio"). Set count:N to grab the top N results (for "baixe 3 músicas do X"). Video downloads at the BEST available quality of that video BY DEFAULT — only set "quality":"low" if the user explicitly asks for low resolution ("baixa resolução"). Live progress bar; the task auto-finishes on success.
 - open_video: { "action": "open_video", "query": string } — opens and PLAYS the single best REAL YouTube video for the query, skipping Shorts/very-short clips (resolves it server-side, then navigates the tab to the watch page). Use for "mostre/abra/toque um vídeo de X", "toque uma música do Y", "mostre alguém fazendo Z". One action, auto-finishes. NEVER just dump the user on a YouTube search results page for these — the top results are Shorts; use open_video instead.
 - create_playlist: { "action": "create_playlist", "songs": string[], "name"?: string, "private"?: boolean } — builds a YouTube playlist that PLAYS IMMEDIATELY from a list of songs YOU name. For "crie/monte uma playlist com as N músicas [mais antigas/melhores/mais tocadas] de ARTISTA": use YOUR music knowledge to fill "songs" with the actual N real song titles in the requested order (e.g. oldest-first), each prefixed with the artist for accurate matching, e.g. ["2Pac Brenda's Got a Baby","2Pac Trapped","2Pac If My Homie Calls", ...]. If the user asks for ALL the songs ("todas as músicas", "all songs", "a discografia"), list as MANY real titles as you know — dozens, not a handful (the system builds them one-by-one and the user can stop anytime). If the user gave a NAME for the playlist (e.g. "com o nome i.a", "chamada X") put it in "name". If the user wants it PRIVATE/particular/privada, set "private": true. The system resolves each title to a real video (skipping Shorts), builds the playlist playing, and — when a name is given or the user asked to save — SAVES it to the logged-in account (renaming + setting privacy via the YouTube UI). Emit this as a SINGLE action. After it, the page is on the playlist: if RECENT HISTORY says the save still needs a step, follow that instruction; otherwise you're done.
@@ -192,6 +218,12 @@ Never generate JavaScript, CSS selectors unless using the fill tool selector fie
 - find_file: { "action": "find_file", "query": string, "filetype"?: string } — finds DIRECT download links to a specific file type using Google's filetype: operator. For "ache um PDF sobre X", "um manual em PDF de Y", "uma planilha de Z": call find_file { "query": "X", "filetype": "pdf" } (or xlsx, docx, pptx, mp3...). Results land in history as "FILES FOUND" with [fileN] URLs — then use download to save the chosen one. Default filetype is pdf.
 - read_aloud: { "action": "read_aloud", "text"?: string } — reads text ALOUD with the computer's voice (text-to-speech, pt-BR). With no "text" it reads the current page's main content. Use for "leia isso pra mim", "leia a notícia em voz alta".
 - report: { "action": "report", "summary": string } — FINAL action. Delivers your synthesized answer/summary to the user and ends the task.
+- web_search: { "action": "web_search", "query": "..." } — searches the web WITHOUT leaving the page: Bah tries several search engines (skipping any that block this connection) and returns the top results (title, URL, snippet) as text. Then navigate to the best result. Prefer this over opening a search engine page.
+- look_at: { "action": "look_at", "ref": number } or { "action": "look_at", "x": n, "y": n, "w": n, "h": n } — ZOOM: the NEXT screenshot is a sharp, full-resolution crop of that element's area (or that viewport rectangle) instead of the whole shrunken page. Use it when text/buttons in the screenshot are too small to read (download tables, OS/version lists, form fields). One step only; while zoomed, act with refs (click_ref/select_option), not click_at.
+- find: { "action": "find", "text": "Agree to the EULA" } — searches the WHOLE page (including off-screen parts and items missing from INTERACTIVE ELEMENTS) for controls/labels containing that text, scrolls the best match into view so it appears in the element list next step, and reports the other matches. Use it when the button/link you need is not in the list.
+- back: { "action": "back" } — the browser Back button (previous page). Prefer it over clicking a site's "Downloads"/breadcrumb menu to return.
+- check / uncheck: { "action": "check", "ref": number } — makes sure a checkbox/radio (e.g. "I accept the license agreement") ends up ticked (or unticked). Safer than click_ref, which toggles and can untick an already ticked box.
+- select_option: { "action": "select_option", "ref": number, "option": "macOS 26.x" } — chooses an option in a drop-down (<select>/combobox) by its visible text (partial match OK). Use it for OS/version/language/country/size selectors — clicking or typing into a <select> does NOT change it. If the option is not found, the result lists the available options; pick one of those.
 - click_ref: { "action": "click_ref", "ref": number } — PREFERRED. Clicks the element with that id from interactive_elements. Most reliable.
 - fill_ref: { "action": "fill_ref", "ref": number, "value": string } — PREFERRED for inputs. Fills the input element with that id.
 - click_text: { "action": "click_text", "text": string, "nth"?: number } fallback when the right element isn't in the ref list.
@@ -274,8 +306,11 @@ STRATEGY (in order of preference):
 4. For known destinations (e.g. "open Gmail"), navigate is fastest.
 
 LEAN ON THE GIANTS (be street-smart, not heroic):
-- To SEARCH, always navigate to the URL in ONE action: https://www.google.com/search?q={query}. NEVER fill the Google homepage box and click the button — that wastes steps and hits overlays.
+- To SEARCH the web, navigate in ONE action to the search URL named on the SEARCH ENGINE line at the top of the page state (Google by default: https://www.google.com/search?q={query}). If a search engine shows "unusual traffic", "sorry" or a captcha, do NOT stop or ask the user — switch to another engine from that line (Bing https://www.bing.com/search?q={query}, DuckDuckGo https://html.duckduckgo.com/html/?q={query}, Yahoo https://search.yahoo.com/search?p={query}, or Perplexity https://www.perplexity.ai/search?q={query} for a summarized answer). NEVER fill a search engine's homepage box and click the button — that wastes steps and hits overlays.
 - Google answers most questions directly in the results page (featured snippets, conversion boxes, weather).
+- SKILLS: when a "SKILLS FOR THIS PAGE" section appears at the top of the page state, follow it — it is short, tested guidance for exactly this kind of page (download chains, license prompts, OS selectors, popups, autocomplete, date pickers, specific sites). Its URL patterns are known-good, so using them is not "inventing" a URL.
+- DOWNLOAD tasks are not research: open the official vendor/download page from the results and keep going.
+- If the user names a store, brand or site whose web address you do not know (any country), use web_search for its name and open its OFFICIAL site, then use that site's own search. Do not answer from search snippets when the user asked you to look on a specific site.
 - RESEARCH / RECOMMENDATION questions ("qual a melhor X", "procure um Y barato", "compare Z", "quanto custa W"): after the Google search, your NEXT action is extract_text to READ THE SNIPPETS, then answer. The snippets already contain product names, prices, specs and recommendations. Do NOT click the result links — they are slow, frequently fail (Google truncates/overlays them), and waste many steps. Only open a specific site if the snippets are truly insufficient.
 - When the answer is a list/comparison (several products with prices/specs, a ranking), finish with render_view (a clean table) instead of a long text report — gather the data from snippets, then render it.
 - Google Images: https://www.google.com/search?q={query}&udm=2 — then extract_images to get URLs.
@@ -352,9 +387,18 @@ As mais baratas costumam ser o Echo Dot (5ª geração) e o Echo Pop.
 
 Emit at most ONE [[ACTION:]] line, only when acting would genuinely help, and never describe the action as already done. For pure questions (definitions, summaries of the current page, general chat) do NOT emit an action line.`;
 
-// Prompts constantes — sanitizados UMA vez no carregamento do módulo para não varrer
-// ~8KB caractere a caractere a cada chamada de IA (era feito em todo callDeepSeek).
-const SANITIZED_AGENT_PROMPT = sanitizeForJson(BROWSER_AGENT_SYSTEM_PROMPT);
+// O bloco do computador/região: antes do app 'ready' o getSystemLocale() LANÇA (e o
+// getLocaleCountryCode volta vazio) — a região sumia calada e o modelo chutava Brasil/pt.
+// Os nomes ficam os mesmos (os corpos de nuvem são travados por texto em tests/goldens) e
+// são remontados uma vez quando o app fica pronto.
+let BROWSER_AGENT_SYSTEM_PROMPT = BROWSER_AGENT_BASE_PROMPT + '\n\n' + machineBlock();
+let SANITIZED_AGENT_PROMPT = sanitizeForJson(BROWSER_AGENT_SYSTEM_PROMPT);
+try {
+  require('electron').app?.whenReady?.().then(() => {
+    BROWSER_AGENT_SYSTEM_PROMPT = BROWSER_AGENT_BASE_PROMPT + '\n\n' + machineBlock();
+    SANITIZED_AGENT_PROMPT = sanitizeForJson(BROWSER_AGENT_SYSTEM_PROMPT);
+  });
+} catch {}
 const SANITIZED_CHAT_PROMPT = sanitizeForJson(CHAT_ASSISTANT_SYSTEM_PROMPT);
 
 // ── Idioma da "voz" do agente (i18n Fase 2) ────────────────────────────────
@@ -1874,3 +1918,6 @@ export class AIEngine {
     }
   }
 }
+
+/** Tests only: the agent system prompt as sent (incl. the computer/region block). */
+export const _agentSystemPromptForTests = () => BROWSER_AGENT_SYSTEM_PROMPT;

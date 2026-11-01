@@ -57,7 +57,9 @@
 
 **🍎 macOS:** from the [same release page](https://github.com/alexvilelabah/bah-browser/releases/latest), get `Bah-*-arm64.dmg` (Apple Silicon: M1 and newer) or `Bah-*-x64.dmg` (Intel). Open it and drag **Bah** into Applications.
 
-> ⚠️ The Mac build isn't signed or notarized by Apple yet, so the first launch says Bah *"is damaged and can't be opened"*. Run `xattr -cr /Applications/Bah.app` in Terminal once, then open Bah normally. There's no auto-update on macOS yet: download the new `.dmg` to update. For best video quality when downloading, install ffmpeg (`brew install ffmpeg`).
+> ⚠️ The Mac build isn't signed or notarized by Apple yet, so the first launch says Bah *"is damaged and can't be opened"*. Run `xattr -cr /Applications/Bah.app` in Terminal once, then open Bah normally. There's no auto-update on macOS yet: download the new `.dmg` to update.
+
+> 🍺 **Video/audio downloads on macOS need [Homebrew](https://brew.sh):** `brew install yt-dlp deno ffmpeg` (or `brew bundle` in a clone of this repo, using the [`Brewfile`](Brewfile)). The Mac build doesn't download programs by itself; Homebrew installs and updates them. Everything else works without them.
 
 **👨‍💻 I want to hack on the code:** clone and run it — see [Running it](#running-it) below.
 
@@ -147,6 +149,11 @@ Windows shortcut: double-click `Abrir-Bah.bat`.
 2. Gear icon → pick a provider.
 3. Pick **DeepSeek**, **Mistral** or **NVIDIA NIM** and paste that provider's key (DeepSeek's is very cheap) → Save. Image generation works with no key either way; chat and the agent need this (or local Ollama, next step).
 4. **Local (optional, free/offline):** install [Ollama](https://ollama.com) and **keep it running** (it lives in the tray and serves models at `127.0.0.1:11434`). Then download a model from inside Bah (☁️/🏠 → 🏠 Local AI → type a name → **Download**) or in a terminal (e.g. `ollama pull qwen3:14b`). Local works offline, but the cloud (DeepSeek) is more reliable.
+5. **Local via llama.cpp (tested setup):** Bah also talks to any OpenAI-compatible server. We test the agent against [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server` running **`Qwen3-VL-8B-Instruct-Q4_K_M.gguf`** (from [`unsloth/Qwen3-VL-8B-Instruct-GGUF`](https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF), with its vision projector) on a 16 GB NVIDIA GPU — it fits fully in VRAM and is fast enough for step-by-step browsing:
+   ```bash
+   llama-server -hf unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M -c 32768 -ngl 99 --host 0.0.0.0 --port 8080
+   ```
+   In Bah: gear icon → 🏠 Local AI → OpenAI-compatible endpoint `http://<server>:8080/v1`. With this model the agent reliably handles multi-page download tasks — e.g. *"download the latest ubuntu iso"* (finds the release index, starts the download, waits for it and reports the saved path; ISO verified against the published SHA256). Use a vision-capable model (the `-VL-` variants): the agent reads the screenshot as well as the page's element list.
 
 ---
 
@@ -170,9 +177,11 @@ The agent runs with full browser privileges, so it's worth being clear about wha
 
 - 🔢 **25-step cap per command.** If a task doesn't finish in 25 actions, the agent stops on its own.
 
-- 🧩 **Compatibility, not evasion.** We present as standard Chrome (Chrome UA + masking `navigator.webdriver`) only to avoid being wrongly blocked. We do **not** break CAPTCHAs, dodge rate-limits, or automate things sites forbid in their terms.
+- 🧩 **Compatibility, not evasion.** We present as standard Chrome (Chrome UA + masking `navigator.webdriver`) only to avoid being wrongly blocked. We do **not** solve image CAPTCHAs or dodge rate-limits. By default the agent stops and asks you on any human-verification page; an **opt-in** menu switch (☑️ *Agent may click captcha checkboxes*, off by default) lets it click a simple "I'm not a robot" / "Verify you are human" checkbox once — the captcha service still decides, and anything more (image puzzles) goes back to you. Respect each site's terms.
 
 - **🔑 Google login — use the "Sign in to Google" button.** Google blocks login *inside* embedded browsers (Electron/webview). Bah handles it the right way: click **🔑 Sign in to Google** → it opens the login in your **real Chrome/Edge** (where Google trusts it), you sign in, and Bah **detects it automatically**, imports the session (cookies via CDP) and closes the login window. Do it **once** and you stay logged in.
+
+- 📥 **Downloads have no type or size limit.** Any file type can be downloaded (installers included), streamed straight to disk. **Torrents:** by default `.torrent` files just download like any other file and `magnet:` links open in your system's torrent app; turn on **🧲 Built-in torrent client** in the menu to open them in Bah's own torrent card instead. Details in [ARCHITECTURE.md](ARCHITECTURE.md#downloads--torrents).
 
 - 🚫 **Adblock pauses on known sites.** YouTube and Twitch get automatic bypass so their player isn't blocked by anti-adblock. Everywhere else adblock stays on.
 
