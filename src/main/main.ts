@@ -45,6 +45,7 @@ import { setupHwMonitor } from './hw-monitor';
 import { setupTorrentManager } from './torrent-manager';
 import { setupSkills } from './skills-loader';
 import { setupProxy, proxyFor } from './proxy';
+import { setupSitePermissions } from './site-permissions';
 import { loadSystemCAs, installCAs } from './system-ca';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
@@ -918,8 +919,9 @@ function createWindow(): void {
   });
 
   // Microfone PRA NOSSA UI (recurso de voz → Whisper local). Sem isto o getUserMedia
-  // falha calado no Electron. Só a janela do app (confiável) ganha 'media'; os SITES no
-  // <webview> usam outra sessão (partition persist:browser) e seguem SEM microfone.
+  // falha calado no Electron. Só a janela do app (confiável) ganha 'media'. Os SITES no
+  // <webview> usam outra sessão (persist:browser), com as permissões de site-permissions.ts
+  // (negado até a pessoa liberar).
   mainWindow.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
     if (permission === 'media') return callback(wc === mainWindow?.webContents);
     callback(true);   // demais permissões da própria UI: mantém o permissivo de antes
@@ -3395,6 +3397,7 @@ app.whenReady().then(async () => {
   // SO no Node. As requisições do próprio Bah (IA, buscas, sugestões) passam pelo MOTOR do navegador
   // (session.fetch): mesmo proxy, PAC, login e repositório de certificados das abas.
   setupProxy(() => mainWindow);
+  setupSitePermissions(() => mainWindow);
   loadSystemCAs().then((pems) => { systemCAs = pems; const n = installCAs(pems); console.log(`[SystemCA] ${pems.length} OS certificates, ${n} added to Node`); }).catch(() => {});
   {
     const browsingSession = session.fromPartition('persist:browser');

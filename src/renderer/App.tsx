@@ -8,6 +8,7 @@ import { selectSkills, formatSkillsBlock, validateSkill, SKILL_STATES, SKILL_TAS
 import AgentVisualOverlay, { AgentVisualState, ClickRipple } from './components/AgentVisualOverlay';
 import { AppGuideBar, BeginnerTour } from './components/AppGuide';
 import { ProxySettings, ProxyAuthPrompt } from './components/ProxyPanel';
+import { SitePermissionBar, SitePermissionsPanel } from './components/SitePermissions';
 import { prefetchGpuInfo, gpuInfo, gpuIsLoaded } from './gpu-info';
 import TorrentSheet, { TorrentSheetData } from './components/TorrentSheet';
 import { useTabStore } from './store';
@@ -189,6 +190,10 @@ declare global {
       setHwAccel?: (on: boolean) => Promise<{ ok: boolean; enabled?: boolean }>;
       onSafeBrowsingBlock?: (cb: (info: { url: string; host: string }) => void) => void;
       proxyGet?: () => Promise<any>;
+      sitePermRespond?: (id: number, choice: 'once' | 'always' | 'never' | 'dismiss' | 'auto-deny') => Promise<any>;
+      sitePermList?: () => Promise<any>;
+      sitePermReset?: (origin: string, kind?: string) => Promise<any>;
+      onSitePermEvent?: (cb: (ev: any) => void) => () => void;
       proxySet?: (c: any) => Promise<any>;
       proxyTest?: (url?: string) => Promise<any>;
       proxyForgetPasswords?: () => Promise<any>;
@@ -605,6 +610,14 @@ export default function App() {
   // o resto: nada limita por precaução, só por escolha explícita.
   // First-run guide: the bar is a hint until dismissed, the tour is a reopenable dialog.
   const [proxyOpen, setProxyOpen] = useState(false);
+  const [sitePermsOpen, setSitePermsOpen] = useState(false);
+  // Aba que a pessoa está VENDO (≠ activeTabIdRef, que segue a aba do agente durante a tarefa).
+  const shownTabRef = useRef(store.activeTabId);
+  shownTabRef.current = store.activeTabId;
+  const isVisibleTab = (wcId: number) => {
+    const wv = webviewRefs.current.get(shownTabRef.current) as any;
+    try { return !!wv && wv.getWebContentsId?.() === wcId; } catch { return false; }
+  };
   const [showGuide, setShowGuide] = useState<boolean>(() => { try { return localStorage.getItem('guideSeen') !== '1'; } catch { return true; } });
   const [showTour, setShowTour] = useState<boolean>(() => { try { return localStorage.getItem('tourSeen') !== '1'; } catch { return true; } });
   const [agentTimeLimitMin, setAgentTimeLimitMin] = useState<number>(() => {
@@ -1456,6 +1469,10 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   <span className="menu-ic">🧩</span>
                   <span className="menu-label">{t('menu.mySkills')}</span>
                 </button>
+                <button className="menu-item" onClick={() => { setMenuOpen(false); setSitePermsOpen(true); }} title={t('menu.sitePermsTitle')}>
+                  <span className="menu-ic">🔒</span>
+                  <span className="menu-label">{t('menu.sitePerms')}</span>
+                </button>
                 <button className="menu-item" onClick={() => { setMenuOpen(false); setProxyOpen(true); }} title={t('menu.proxyTitle')}>
                   <span className="menu-ic">🌐</span>
                   <span className="menu-label">{t('menu.proxy')}</span>
@@ -1619,6 +1636,8 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
             </div>
           )}
           {proxyOpen && <ProxySettings onClose={() => setProxyOpen(false)} />}
+          {sitePermsOpen && <SitePermissionsPanel onClose={() => setSitePermsOpen(false)} />}
+          <SitePermissionBar isVisibleTab={isVisibleTab} />
           <ProxyAuthPrompt />
           {showGuide && (
             <AppGuideBar

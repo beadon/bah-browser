@@ -113,6 +113,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('proxy:auth-request', listener);
     return () => ipcRenderer.removeListener('proxy:auth-request', listener);
   },
+  sitePermRespond: (id: number, choice: 'once' | 'always' | 'never' | 'dismiss' | 'auto-deny') => ipcRenderer.invoke('siteperm:respond', id, choice),
+  sitePermList: () => ipcRenderer.invoke('siteperm:list'),
+  sitePermReset: (origin: string, kind?: string) => ipcRenderer.invoke('siteperm:reset', origin, kind),
+  onSitePermEvent: (cb: (ev: { type: 'request' | 'cancel' | 'changed'; req?: any; id?: number }) => void) => {
+    const req = (_e: any, r: any) => cb({ type: 'request', req: r });
+    const cancel = (_e: any, id: number) => cb({ type: 'cancel', id });
+    const changed = () => cb({ type: 'changed' });
+    ipcRenderer.on('siteperm:request', req); ipcRenderer.on('siteperm:cancel', cancel); ipcRenderer.on('siteperm:changed', changed);
+    return () => { ipcRenderer.removeListener('siteperm:request', req); ipcRenderer.removeListener('siteperm:cancel', cancel); ipcRenderer.removeListener('siteperm:changed', changed); };
+  },
   skillsSave: (markdown: string) => ipcRenderer.invoke('skills:save', markdown),
   skillsOpenFolder: () => ipcRenderer.invoke('skills:open-folder'),
   selectOption: (wcId: number, backendNodeId: number, option: string) =>
