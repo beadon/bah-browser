@@ -150,6 +150,24 @@ Atalho Windows: clique duplo em `Abrir-Bah.bat`.
 3. Escolha **DeepSeek**, **Mistral** ou **NVIDIA NIM** e cole a chave dele (a da DeepSeek é baratíssima) → Salvar. Gerar imagem funciona sem chave de qualquer jeito; conversar e o agente precisam de uma dessas (ou do Ollama local, próximo passo).
 4. **Local (opcional, grátis/offline):** instale o [Ollama](https://ollama.com) e **deixe-o rodando** (fica na bandeja e serve os modelos em `127.0.0.1:11434`). Depois baixe um modelo dentro do Bah (☁️/🏠 → 🏠 IA Local → digite o nome → **Baixar**) ou no terminal (ex.: `ollama pull qwen3:14b`). O local roda offline, mas a nuvem (DeepSeek) é mais confiável.
 
+### Redes corporativas (proxy, certificados da empresa)
+
+O Bah segue as **configurações de proxy do sistema operacional** por padrão, como o Chrome — inclusive
+detecção automática (WPAD) e scripts PAC definidos pela TI. Para configurar à mão: menu ⋮ → **🌐 Rede e proxy**:
+**Sistema** (padrão) · **Manual** (`proxy.empresa:8080` para HTTP+HTTPS, ou `socks5://127.0.0.1:1080` para
+proxy SOCKS / túnel `ssh -D`) · **PAC** (URL do script) · **Direto**, mais uma lista de exceções e o botão
+**Testar conexão**. `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` pré-configuram quando nada foi salvo.
+
+- **Login no proxy (HTTP 407, ex.: Blue Coat):** o Bah pede usuário e senha numa caixa própria;
+  *Lembrar* guarda cifrado com o chaveiro do SO (`safeStorage`). Nunca chegam ao agente nem ao modelo.
+- **Tudo usa a mesma rota:** páginas, janelas de login, requisições do próprio Bah (IA, atualizações,
+  busca) e os downloads do agente passam pela pilha de rede do motor do navegador — uma configuração
+  (e um login) vale para tudo.
+- **Certificados-raiz da empresa (inspeção TLS):** o Chromium já confia no repositório do SO. O Node do
+  Electron não, então o Bah lê o repositório do SO na inicialização (chaveiros do macOS, repositórios
+  `Root`/`CA` do Windows, bundle de CAs do Linux) e soma essas raízes às padrão do Node — downloads na
+  worker funcionam atrás de proxy com inspeção TLS também.
+
 ---
 
 ## Segurança e limites

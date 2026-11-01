@@ -55,6 +55,8 @@ de DOM sintéticos), então os sites reagem exatamente como reagiriam pra uma pe
 | `agent-download-worker.ts`, `download-progress.ts` | A ação `download` do agente: uma worker de `worker_threads` por download; política de cadência do progresso + travamento. Ver [Downloads e torrents](#downloads-e-torrents) |
 | `torrent-manager.ts`, `torrent/engine.mjs` | Cliente de torrent embutido **opcional** (desligado por padrão): ponte IPC + o motor, isolado num `utilityProcess` que só sobe quando usado. Ver [Downloads e torrents](#downloads-e-torrents) |
 | `media-downloader.ts` | Wrapper de `yt-dlp` / `ffmpeg` (baixar vídeo/áudio) |
+| `proxy.ts`, `proxy-config.ts` | Proxy pra **todas** as sessões (sistema / manual http·https·socks5 / PAC / direto), caixa de login 407 com credencial salva cifrada no chaveiro, IPC `proxy:*`. O `fetch` do processo principal passa pelo `session.fetch` da sessão `persist:browser`, e downloads do agente que precisam de proxy usam `session.downloadURL` — uma configuração vale pra tudo |
+| `system-ca.ts` | Lê o repositório de certificados-raiz do SO e soma às CAs padrão do Node (`tls.setDefaultCACertificates`) — processo principal e worker de download — pra proxies corporativos com inspeção TLS |
 | `video-cuts.ts`, `transcript.ts` | Recursos de vídeo locais (localizar onde uma frase é dita, transcrições) — ffmpeg nativo |
 | `image-harvester.ts` | Colheita de imagens em massa + geração de imagem por IA (Pollinations), com limites |
 | `ocr-engine.ts`, `page-capture.ts` | OCR no aparelho (Tesseract) + screenshots |

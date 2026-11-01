@@ -7,6 +7,7 @@ import { ENGINES, engineOrder, engineForUrl, markBlocked, searchUrl, agentSearch
 import { selectSkills, formatSkillsBlock, validateSkill, SKILL_STATES, SKILL_TASKS, SKILL_MAX_WORDS, type Skill } from '../shared/skills';
 import AgentVisualOverlay, { AgentVisualState, ClickRipple } from './components/AgentVisualOverlay';
 import { AppGuideBar, BeginnerTour } from './components/AppGuide';
+import { ProxySettings, ProxyAuthPrompt } from './components/ProxyPanel';
 import { prefetchGpuInfo, gpuInfo, gpuIsLoaded } from './gpu-info';
 import TorrentSheet, { TorrentSheetData } from './components/TorrentSheet';
 import { useTabStore } from './store';
@@ -187,6 +188,12 @@ declare global {
       getHwAccel?: () => Promise<{ enabled: boolean }>;
       setHwAccel?: (on: boolean) => Promise<{ ok: boolean; enabled?: boolean }>;
       onSafeBrowsingBlock?: (cb: (info: { url: string; host: string }) => void) => void;
+      proxyGet?: () => Promise<any>;
+      proxySet?: (c: any) => Promise<any>;
+      proxyTest?: (url?: string) => Promise<any>;
+      proxyForgetPasswords?: () => Promise<any>;
+      proxyAuthResponse?: (id: number, r: { user?: string; pass?: string; remember?: boolean } | null) => Promise<any>;
+      onProxyAuthRequest?: (cb: (r: any) => void) => () => void;
       takeOcr?: (wcId: number, domText: string, force?: boolean, frameDataUrl?: string) => Promise<{
         ocrText: string; ocrUsed: boolean; skipped: boolean;
         confidence?: number; screenshotPath?: string; durationMs?: number; error?: string;
@@ -597,6 +604,7 @@ export default function App() {
   // Parar exige alguém na frente da tela). 0 = desligada, que é o padrão — coerente com
   // o resto: nada limita por precaução, só por escolha explícita.
   // First-run guide: the bar is a hint until dismissed, the tour is a reopenable dialog.
+  const [proxyOpen, setProxyOpen] = useState(false);
   const [showGuide, setShowGuide] = useState<boolean>(() => { try { return localStorage.getItem('guideSeen') !== '1'; } catch { return true; } });
   const [showTour, setShowTour] = useState<boolean>(() => { try { return localStorage.getItem('tourSeen') !== '1'; } catch { return true; } });
   const [agentTimeLimitMin, setAgentTimeLimitMin] = useState<number>(() => {
@@ -1448,6 +1456,10 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   <span className="menu-ic">🧩</span>
                   <span className="menu-label">{t('menu.mySkills')}</span>
                 </button>
+                <button className="menu-item" onClick={() => { setMenuOpen(false); setProxyOpen(true); }} title={t('menu.proxyTitle')}>
+                  <span className="menu-ic">🌐</span>
+                  <span className="menu-label">{t('menu.proxy')}</span>
+                </button>
                 <button className="menu-item" onClick={() => cycleSearchEngine()} title={t('menu.searchEngineTitle')}>
                   <span className="menu-ic">🔎</span>
                   <span className="menu-label">{t('menu.searchEngine')}</span>
@@ -1606,6 +1618,8 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               <button className="find-btn" onClick={closeFind} title={t('find.close')}>✕</button>
             </div>
           )}
+          {proxyOpen && <ProxySettings onClose={() => setProxyOpen(false)} />}
+          <ProxyAuthPrompt />
           {showGuide && (
             <AppGuideBar
               onStartTour={() => setShowTour(true)}

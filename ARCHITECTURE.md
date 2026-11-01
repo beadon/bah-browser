@@ -57,6 +57,8 @@ sites behave exactly as they would for a human.
 | `agent-download-worker.ts`, `download-progress.ts` | The agent's `download` action: one `worker_threads` worker per download; progress cadence + stall policy. See [Downloads & torrents](#downloads--torrents) |
 | `torrent-manager.ts`, `torrent/engine.mjs` | **Optional** built-in torrent client (off by default): IPC bridge + the engine, isolated in a `utilityProcess` that only starts when used. See [Downloads & torrents](#downloads--torrents) |
 | `media-downloader.ts` | `yt-dlp` / `ffmpeg` wrapper (video/audio download) |
+| `proxy.ts`, `proxy-config.ts` | Proxy for **every** session (system / manual http·https·socks5 / PAC / direct), 407 sign-in prompt with keychain-encrypted saved credentials, `proxy:*` IPC. Main-process `fetch` is routed through the `persist:browser` session's `session.fetch`, and agent downloads that need a proxy use `session.downloadURL`, so one setting covers everything |
+| `system-ca.ts` | Reads the OS root certificate store and adds it to Node's default CAs (`tls.setDefaultCACertificates`) — main process and download worker — for TLS-inspecting corporate proxies |
 | `video-cuts.ts`, `transcript.ts` | Local video features (locate where a phrase is spoken, transcripts) — native ffmpeg |
 | `image-harvester.ts` | Bulk image download + AI image generation (Pollinations), with limits |
 | `ocr-engine.ts`, `page-capture.ts` | On-device OCR (Tesseract) + screenshots |

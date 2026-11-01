@@ -19,6 +19,8 @@ interface Deps {
   uniqueDownloadPath: (base: string) => string;
   /** true = outro dono assumiu este download (ex.: .torrent com o cliente embutido ligado). */
   interceptDownload?: (url: string, filename: string) => boolean;
+  /** false = não usar o motor Node de várias conexões pra esta URL (ex.: atrás de proxy). */
+  engineAllowed?: (url: string) => Promise<boolean>;
   /** true = agente trabalhando: um 2º download do MESMO arquivo/URL ainda baixando é recusado. */
   blockDuplicates?: () => boolean;
   /** Cancela um download que não é deste gerenciador (ex.: ação `download` do agente). */
@@ -185,6 +187,11 @@ export function setupDownloadManager(deps: Deps) {
     try { chain = t.item.getURLChain(); } catch {}
     // O Chromium já seguiu os redirecionamentos: usa o endereço FINAL, com os cookies DELE.
     const finalUrl = chain[chain.length - 1] || t.url;
+    if (deps.engineAllowed && !(await deps.engineAllowed(finalUrl).catch(() => true))) {
+      t.probing = false;
+      try { t.item.resume(); } catch {}
+      return;
+    }
     const headers: Record<string, string> = {};
     try { headers['User-Agent'] = (wc && !wc.isDestroyed() ? wc.getUserAgent() : '') || sess.getUserAgent(); } catch {}
     try { const ref = wc && !wc.isDestroyed() ? wc.getURL() : ''; if (/^https?:/i.test(ref)) headers.Referer = ref; } catch {}

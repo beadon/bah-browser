@@ -103,6 +103,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   verifyClick: (wcId: number, backendNodeId: number) =>
     ipcRenderer.invoke('cdp:verify-click', wcId, backendNodeId),
   skillsList: () => ipcRenderer.invoke('skills:list'),
+  proxyGet: () => ipcRenderer.invoke('proxy:get'),
+  proxySet: (c: any) => ipcRenderer.invoke('proxy:set', c),
+  proxyTest: (url?: string) => ipcRenderer.invoke('proxy:test', url),
+  proxyForgetPasswords: () => ipcRenderer.invoke('proxy:forget-passwords'),
+  proxyAuthResponse: (id: number, r: { user?: string; pass?: string; remember?: boolean } | null) => ipcRenderer.invoke('proxy:auth-response', id, r),
+  onProxyAuthRequest: (cb: (req: { id: number; host: string; port: number; realm?: string; scheme?: string }) => void) => {
+    const listener = (_e: any, req: any) => cb(req);
+    ipcRenderer.on('proxy:auth-request', listener);
+    return () => ipcRenderer.removeListener('proxy:auth-request', listener);
+  },
   skillsSave: (markdown: string) => ipcRenderer.invoke('skills:save', markdown),
   skillsOpenFolder: () => ipcRenderer.invoke('skills:open-folder'),
   selectOption: (wcId: number, backendNodeId: number, option: string) =>

@@ -157,6 +157,24 @@ Windows shortcut: double-click `Abrir-Bah.bat`.
    ```
    In Bah: gear icon → 🏠 Local AI → OpenAI-compatible endpoint `http://<server>:8080/v1`. With this model the agent reliably handles multi-page download tasks — e.g. *"download the latest ubuntu iso"* (finds the release index, starts the download, waits for it and reports the saved path; ISO verified against the published SHA256). Use a vision-capable model (the `-VL-` variants): the agent reads the screenshot as well as the page's element list.
 
+### Corporate networks (proxy, company certificates)
+
+Bah follows the **operating system's proxy settings** by default, like Chrome — including automatic
+detection (WPAD) and PAC scripts set by IT. To set one by hand: menu ⋮ → **🌐 Network & proxy**:
+**System** (default) · **Manual** (`proxy.corp:8080` for HTTP+HTTPS, or `socks5://127.0.0.1:1080` for a
+SOCKS proxy / `ssh -D` tunnel) · **PAC** (script URL) · **Direct**, plus a bypass list and a
+**Test connection** button. `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` pre-configure it when nothing is saved.
+
+- **Proxy sign-in (HTTP 407, e.g. Blue Coat):** Bah asks for the username and password in its own box;
+  *Remember* stores them encrypted with the OS keychain (`safeStorage`). They never reach the agent or the model.
+- **Everything uses the same route:** pages, sign-in windows, Bah's own requests (AI calls, updates,
+  search) and the agent's downloads all go through the browser engine's network stack, so one proxy
+  setting (and one sign-in) covers them.
+- **Company root certificates (TLS inspection):** Chromium already trusts the OS certificate store.
+  Electron's Node does not, so Bah reads the OS store at startup (macOS keychains, Windows `Root`/`CA`
+  stores, Linux CA bundle) and adds those roots to Node's defaults — downloads in the worker thread work
+  behind a TLS-inspecting proxy too.
+
 ---
 
 ## Safety & limits

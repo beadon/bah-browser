@@ -86,6 +86,11 @@ Optional: `npm run test:unit` should report `fail 0`.
 
 macOS: for video/audio downloads, `brew bundle` in the repo installs the tools from `Brewfile`.
 
+**Behind a corporate proxy:** `npm install` needs the proxy and, with TLS inspection, the company root
+certificate: `export HTTPS_PROXY=http://proxy.corp:8080` and `export NODE_EXTRA_CA_CERTS=/path/to/company-root.pem`
+(ask the user or their IT for both; never disable TLS checks with `strict-ssl=false`). Bah itself
+picks up the OS proxy and OS root certificates on its own; see README → *Corporate networks*.
+
 ---
 
 ## C. Set up the AI (after installing)

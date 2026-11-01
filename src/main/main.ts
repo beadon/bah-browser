@@ -44,6 +44,8 @@ import { setupVideoButton } from './video-button';
 import { setupHwMonitor } from './hw-monitor';
 import { setupTorrentManager } from './torrent-manager';
 import { setupSkills } from './skills-loader';
+import { setupProxy, proxyFor } from './proxy';
+import { loadSystemCAs, installCAs } from './system-ca';
 // Idioma que os SITES recebem (Accept-Language, navigator.languages, --lang) — FONTE ÚNICA.
 import { LANG_SWITCH, NAV_LANGUAGES, ACCEPT_LANGUAGE } from './site-locale';
 
@@ -2666,6 +2668,8 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
     getMainWindow: () => mainWindow,
     uniqueDownloadPath,
     blockDuplicates: () => agentBusy,
+    // O motor de várias conexões é Node puro (não usa o proxy): atrás de proxy, o Chromium baixa.
+    engineAllowed: async (url: string) => (await proxyFor(url)) === 'DIRECT',
     cancelExternal: (id) => {
       const w = agentDownloads.get(id);
       if (!w) return false;
@@ -2704,14 +2708,21 @@ ipcMain.handle('local:test-connection', async (_e, baseUrl?: string, authKey?: s
   // resto chega como 'agent:download-event' (kind 'agent'): progresso a cada 1s pro painel,
   // `notify` na cadência do ETA pro agente, stall, e completed/failed/cancelled com o caminho.
   let agentDlSeq = 0;
-  ipcMain.handle('download:url', (_e, url: string, filename?: string) => {
+  ipcMain.handle('download:url', async (_e, url: string, filename?: string) => {
     if (!/^https?:\/\//i.test(url)) return { success: false, error: 'Only http(s) URLs can be downloaded.' };
+    // Atrás de proxy: o downloader do PRÓPRIO motor (proxy, PAC, login do proxy, certificados do SO;
+    // roda fora do processo principal). A linha aparece no painel e o agente acompanha pelos eventos.
+    const via = await proxyFor(url);
+    if (via && via !== 'DIRECT') {
+      try { session.fromPartition('persist:browser').downloadURL(url); } catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+      return { success: true, info: { background: true, via: 'browser', path: '(Downloads folder — see DOWNLOAD STARTED)', proxy: via } };
+    }
     const id = `agdl_${++agentDlSeq}`;
     // Empacotado: o worker roda do app.asar.unpacked (ver asarUnpack). Em dev o replace é no-op.
     const workerPath = path.join(__dirname, 'agent-download-worker.js').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
     let worker: Worker;
     try {
-      worker = new Worker(workerPath, { workerData: { url, filename, dir: getDownloadDir(), acceptLanguage: ACCEPT_LANGUAGE } });
+      worker = new Worker(workerPath, { workerData: { url, filename, dir: getDownloadDir(), acceptLanguage: ACCEPT_LANGUAGE, cas: systemCAs } });
     } catch (e: any) {
       return { success: false, error: 'download worker failed to start: ' + String(e?.message ?? e) };
     }
@@ -3377,7 +3388,18 @@ function setupAutoUpdater(): void {
 }
 
 
+// Raízes do SO (empresa que inspeciona TLS) pro Node: carregadas no boot e repassadas à worker de download.
+let systemCAs: string[] = [];
 app.whenReady().then(async () => {
+  // Rede corporativa: proxy (System/Manual/PAC/Direct + login 407) em todas as sessões, e as raízes do
+  // SO no Node. As requisições do próprio Bah (IA, buscas, sugestões) passam pelo MOTOR do navegador
+  // (session.fetch): mesmo proxy, PAC, login e repositório de certificados das abas.
+  setupProxy(() => mainWindow);
+  loadSystemCAs().then((pems) => { systemCAs = pems; const n = installCAs(pems); console.log(`[SystemCA] ${pems.length} OS certificates, ${n} added to Node`); }).catch(() => {});
+  {
+    const browsingSession = session.fromPartition('persist:browser');
+    (globalThis as any).fetch = (input: any, init?: any) => browsingSession.fetch(input, init);
+  }
   // Widevine (DRM): sem ele Netflix/Prime/Disney+ mostram tela de erro em vez do vídeo
   // (M7701-1003). O Electron de cima não embute CDM nenhum — por isso o app roda no fork
   // castLabs (mesma versão, +wvcus). O CDM vem por component updater: baixa na PRIMEIRA
