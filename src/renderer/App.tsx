@@ -136,6 +136,9 @@ declare global {
       abortTyping?: () => Promise<any>;
       realKey?: (wcId: number, key: string) => Promise<any>;
       selectAll?: (wcId: number) => Promise<any>;
+      inspect?: (wcId: number, target: any) => Promise<{ ok: boolean; state?: any; error?: string }>;
+      keyState?: (wcId: number, key: string, down: boolean) => Promise<any>;
+      insertText?: (wcId: number, text: string) => Promise<any>;
       waitNetworkIdle?: (wcId: number, idleMs: number, timeoutMs: number) => Promise<{ ok: boolean; waitedMs?: number; error?: string }>;
       frameClick?: (wcId: number, key: string, id: number) => Promise<any>;
       frameFill?: (wcId: number, key: string, id: number, value: string) => Promise<{ ok: boolean; value?: string; error?: string }>;
@@ -2523,6 +2526,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       if (e.placeholder) attrs.push(`placeholder="${e.placeholder.slice(0, 40)}"`);
                       if (e.href) attrs.push(`href="${e.href.slice(0, 60)}"`);
                       if (e.frame) attrs.push(`frame="${e.frame}"`);
+                      if (e.disabled) attrs.push('disabled');
                       const attrStr = attrs.length ? ' ' + attrs.join(' ') : '';
                       const text = (e.text || '').slice(0, 80).replace(/\s+/g, ' ').trim();
                       const key = elementKey(e);
@@ -4391,6 +4395,19 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       }
                       toolResult = { success: true, info: { closed: action.tab } };
                     } else toolResult = { success: false, error: `Tab ${action.tab} not found` };
+                  } else if (action.type === 'get') {
+                    const el = observation.interactive_elements.find(e => e.id === action.ref);
+                    const wcIdG = (wv as any).getWebContentsId?.();
+                    if (!el || wcIdG == null) toolResult = { success: false, error: `No element with ref @${action.ref} — re-observe the page.` };
+                    else {
+                      const r = await window.electronAPI?.inspect?.(wcIdG, el.frameNode ? { key: el.frameNode.key, id: el.frameNode.id } : el.backendNodeId != null ? { backendNodeId: el.backendNodeId } : { x: el.x, y: el.y });
+                      if (r?.ok && r.state) { history += `\nGET @${action.ref}: ${JSON.stringify(r.state)}`; toolResult = { success: true, info: { ref: action.ref } }; }
+                      else toolResult = { success: false, error: r?.error || 'could not read the element' };
+                    }
+                  } else if ((action.type === 'keydown' || action.type === 'keyup' || action.type === 'insert_text') && wcId != null) {
+                    toolResult = action.type === 'insert_text'
+                      ? await window.electronAPI?.insertText?.(wcId, action.text)
+                      : await window.electronAPI?.keyState?.(wcId, action.key, action.type === 'keydown');
                   } else if (action.type === 'click_role') {
                     toolResult = { success: false, error: roleMiss || 'no matching element' };
                   } else if (action.type === 'dialog') {
@@ -4799,7 +4816,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   // Internal actions (plan/store/extract_text) never change the page — skip the
                   // settle + re-observe machinery (10-20s on heavy pages) and reuse the current state.
                   const pageNeutralAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog'
+                    || action.type === 'look_at' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog' || action.type === 'get'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud';
@@ -4863,7 +4880,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   });
                   // Internal-state actions (plan/store/extract) don't change the page — don't penalize them
                   const internalAction = action.type === 'plan' || action.type === 'store' || action.type === 'extract_text'
-                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog'
+                    || action.type === 'look_at' || action.type === 'find' || action.type === 'web_search' || action.type === 'history_search' || action.type === 'suggest_time_zone' || action.type === 'list_files' || action.type === 'read_file' || action.type === 'dialog' || action.type === 'get'
                     || action.type === 'list_downloads' || action.type === 'cancel_download' || action.type === 'pause_download' || action.type === 'resume_download' || action.type === 'retry_download'
                     || action.type === 'extract_images' || action.type === 'search_images' || action.type === 'harvest_images' || action.type === 'generate_image' || action.type === 'download' || action.type === 'download_video'
                     || action.type === 'read_aloud' || action.type === 'wait';

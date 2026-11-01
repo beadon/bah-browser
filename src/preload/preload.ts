@@ -98,6 +98,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   frameClick: (wcId: number, key: string, id: number) => ipcRenderer.invoke('cdp:frame-click', wcId, key, id),
   frameFill: (wcId: number, key: string, id: number, value: string) => ipcRenderer.invoke('cdp:frame-fill', wcId, key, id, value),
   waitNetworkIdle: (wcId: number, idleMs: number, timeoutMs: number) => ipcRenderer.invoke('cdp:wait-network-idle', wcId, idleMs, timeoutMs),
+  inspect: (wcId: number, target: any) => ipcRenderer.invoke('cdp:inspect', wcId, target),
+  keyState: (wcId: number, key: string, down: boolean) => ipcRenderer.invoke('input:key-state', wcId, key, down),
+  insertText: (wcId: number, text: string) => ipcRenderer.invoke('input:insert-text', wcId, text),
   selectAll: (wcId: number) => ipcRenderer.invoke('input:select-all', wcId),
   realKey: (wcId: number, key: string) =>
     ipcRenderer.invoke('input:key', wcId, key),
