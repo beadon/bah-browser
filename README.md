@@ -102,7 +102,7 @@ Want another workflow? Bah can **save what worked as a skill** — see [CONTRIBU
 - **Safe Browsing** (URLhaus malicious-hosts list, updated daily)
 - **Real mouse clicks** via Chromium `sendInputEvent` (not synthetic events — goes through React, Vue, Angular without being ignored)
 - **Honest, consistent browser identity** — current Chrome user agent, client hints and languages set inside the engine (one source, no JavaScript patching), so sites see a normal Chrome and don't wrongly block it. It does not try to evade bot detection; sites that forbid automation get **careful mode**
-- **Navigation skills** — short `SKILL.md` recipes (pop-ups, date pickers, autocomplete, EULAs, OS selectors, downloads, shopping, travel, people search) chosen per step; save your own after a task that worked
+- **Navigation skills** — short `SKILL.md` recipes (pop-ups, date pickers, autocomplete, EULAs, OS selectors, downloads, shopping, travel, people search, job applications) chosen per step; save your own after a task that worked
 - **Safety first** — confirms payments/deletions/submits; site permissions (location, camera, microphone, clipboard) are **blocked until you allow them**; uploads only use files *you* pick or a folder *you* allow for the session; page dialogs go through Bah's own box
 - **Corporate networks** — system/manual/PAC/SOCKS proxies with sign-in, OS root certificates, WebRTC leak protection, VPN-aware region and a "time zone for sites" setting
 - **Comet-style visual overlay** — pulsing border, scan line, click ripple, status label
@@ -232,7 +232,7 @@ The agent runs with full browser privileges, so it's worth being clear about wha
 
 - 🔓 **It's your real session.** The browser uses a persistent partition (`persist:browser`), so cookies and logins are saved. If you're logged into Gmail in Bah, so is the agent. **The AI can access anything you could access manually.** Don't log into accounts you wouldn't trust an assistant with.
 
-- 🛡️ **Safety brake on sensitive actions.** Before **paying, buying, deleting, or entering card data**, the agent **pauses and asks for your confirmation** — and this works on *every* path (model clicks, coordinate clicks, Enter on a checkout page, learned shortcuts, and repeated automations). It never does those silently.
+- 🛡️ **Safety brake on sensitive actions.** Before **paying, buying, deleting, entering card data, or sending a job application**, the agent **pauses and asks for your confirmation** — and this works on *every* path (model clicks, coordinate clicks, Enter on a checkout page, learned shortcuts, and repeated automations). It never does those silently.
 
 - 🛑 **Stop means stop.** The ■ Stop button cancels immediately, even mid model-call or mid-loop; a late response won't "resurrect" a cancelled task.
 

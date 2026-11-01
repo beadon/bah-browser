@@ -93,7 +93,7 @@ uns dois pulos.
 | Isolamento de processo | `main.ts` → `webPreferences` | `contextIsolation: true`, `nodeIntegration: false` |
 | Binário blindado (Electron Fuses) | [`build/afterPack.js`](build/afterPack.js) | RunAsNode off, `NODE_OPTIONS` ignorado, `--inspect` ignorado |
 | Bridge IPC = único portão | [`preload.ts`](src/preload/preload.ts) | todo canal é `ipcRenderer.invoke(...)`; nenhum primitivo Node exposto |
-| Freio (pagar / comprar / excluir / cartão) | [`src/renderer/risk.ts`](src/renderer/risk.ts) + o loop do agente em `App.tsx` | `riskForAction` classifica; clique, **fill** (cartão) e **press** (Enter no checkout) pedem confirmação antes de rodar |
+| Freio (pagar / comprar / excluir / cartão / enviar candidatura) | [`src/renderer/risk.ts`](src/renderer/risk.ts) + o loop do agente em `App.tsx` | `riskForAction` classifica; clique, **fill** (cartão) e **press** (Enter no checkout) pedem confirmação antes de rodar. Numa tarefa de candidatura, um botão "Submit"/"Enviar" puro e o Enter na página de revisão também pedem (`📨 Send it` / `Don't send`) |
 | IA local fica offline | `main.ts` (roteador híbrido, ramo local) | na falha do Ollama devolve erro — **sem** fallback silencioso pra nuvem |
 | Download só cai na pasta de downloads; nada roda sozinho | `main.ts` (`download:url`) + [`download-manager.ts`](src/main/download-manager.ts) | arquivos vão só pro `getDownloadDir()` e nunca são abertos/executados automaticamente. **Sem lista de tipos bloqueados** — ver tradeoffs abaixo |
 | Motor de torrent é opcional | [`torrent-manager.ts`](src/main/torrent-manager.ts) (`builtinOn`, `handleUri`) | cliente embutido DESLIGADO por padrão: `.torrent` salvo como arquivo, `magnet:` vai pro app do sistema, o `utilityProcess` do motor nunca sobe |

@@ -2407,6 +2407,9 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               const commandIsShopping = namesStore(command) || /\b(buy|price|prices|cheapest|compare|deal|deals|product|products|under \$?\d+|pre[cç]os?|barat\w*|comprar)\b/i.test(command);
               // Peça compatível com um modelo (carregador/fonte/bateria pra "Lenovo IdeaPad 3 15ADA05").
               const commandIsParts = /\b(charger|chargers|adapter|adaptor|power (supply|adapter|brick)|ac adapter|battery|replacement|compatible|part number|fru|fonte|carregador|bateria|cargador)\b/i.test(command);
+              // Candidatura a vaga: liga a skill job-apply e o freio do "Submit" puro do formulário.
+              const commandIsJobs = /\b(jobs?|job (posting|listing|application|offer)s?|apply (to|for)|applying|career(s| page)?|hiring|(my |a )?(r[eé]sum[eé]|cv)|cover letter|indeed|glassdoor|greenhouse|workday|lever\.co|vagas?|candidat\w+|curr[ií]culo|emprego|empleo|trabajo)\b/i.test(command);
+              const riskOpts = { jobs: commandIsJobs };
               const commandIsPeople = /\b(people|person|contacts?|who works|employees?|profiles?|recruiters?|founders?|ceo|cto|cfo|coo|vp|directors?|head of|managers? at|engineers? at|linkedin)\b/i.test(command);
               // Site cuidadoso: quantas navegações o agente já fez nele NESTA tarefa (máx. 1).
               let carefulNavs = 0;
@@ -2607,6 +2610,9 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
               const confirmRisky = (risk: { kind: string; label: string }): Promise<boolean> => {
                 setAgentVisual('idle');
                 const verb = risk.kind === 'card data' ? 'fill in' : 'click';
+                const message = risk.kind === 'application'
+                  ? `📨 Ready to send your application. Check the form in the tab first: I will click "${risk.label}" and it goes to the employer. Send it?`
+                  : `⚠️ Safety pause — this involves ${risk.kind}. I will ${verb} "${risk.label}". Do you want me to continue?`;
                 return new Promise<boolean>((resolve) => {
                   let done = false;
                   const finish = (v: boolean) => { if (!done) { done = true; resolve(v); } };
@@ -2615,7 +2621,8 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     kind: 'confirm',
                     risk: risk.kind,
                     label: risk.label,
-                    message: `⚠️ Safety pause — this involves ${risk.kind}. I will ${verb} "${risk.label}". Do you want me to continue?`,
+                    message,
+                    ...(risk.kind === 'application' ? { title: '📨 Send application?', yesLabel: '📨 Send it', noLabel: "Don't send" } : {}),
                     onConfirm: () => finish(true),
                     onCancel: () => finish(false),
                   });
@@ -2653,7 +2660,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   onProgress({ kind: 'status', message: `🔁 Automation: "${macro.command.slice(0, 70)}" — ${macro.steps.length} step(s) × ${times >= 100000 ? '∞ (until you stop)' : times}${repeatIntent.intervalMs ? `, every ${Math.round(repeatIntent.intervalMs / 1000)}s` : ''}. Zero AI.` });
                   // FREIO: se a automação inclui uma ação de risco (pagar/excluir/cartão),
                   // confirma UMA vez antes de repetir (não a cada repetição — seria absurdo).
-                  const riskyStep = macro.steps.map(s => riskForAction(s as any)).find((r): r is RiskInfo => !!r);
+                  const riskyStep = macro.steps.map(s => riskForAction(s as any, undefined, undefined, riskOpts)).find((r): r is RiskInfo => !!r);
                   if (riskyStep) {
                     const ok = await confirmRisky(riskyStep);
                     throwIfCancelled();
@@ -2745,7 +2752,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   console.log(`[Agent] fast path -> ${initialShortcut.reason}`);
                   const beforeUrl = wv.getURL();
                   // FREIO: atalho aprendido também passa pela confirmação se for de risco.
-                  const scCancel = await gateRisk(riskForAction(initialShortcut.action as any, undefined, beforeUrl));
+                  const scCancel = await gateRisk(riskForAction(initialShortcut.action as any, undefined, beforeUrl, riskOpts));
                   if (scCancel) {
                     allResults.push({ action: initialShortcut.action as BrowserAction, result: scCancel });
                     finishRun('cancelled', scCancel.error);
@@ -3127,7 +3134,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   ].filter(Boolean);
                   const stepSkills = selectSkills(allSkills, {
                     url: observation.url, states: pageStates,
-                    tasks: [commandWantsDownload ? 'download' : '', commandWantsSearch ? 'search' : '', commandIsTravel ? 'travel' : '', commandIsShopping ? 'shopping' : '', commandIsParts ? 'parts' : '', commandIsPeople ? 'people' : ''].filter(Boolean),
+                    tasks: [commandWantsDownload ? 'download' : '', commandWantsSearch ? 'search' : '', commandIsTravel ? 'travel' : '', commandIsShopping ? 'shopping' : '', commandIsParts ? 'parts' : '', commandIsPeople ? 'people' : '', commandIsJobs ? 'jobs' : ''].filter(Boolean),
                   });
                   const skillsBlock = formatSkillsBlock(stepSkills);
                   if (stepSkills.length) onProgress({ kind: 'status', message: `🧩 Skills: ${stepSkills.map(x => x.name).join(', ')}` });
@@ -3733,7 +3740,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                   }
                   // Ritmo por site: ações que tocam a página esperam uma pausa ALEATÓRIA de 1–5s no mesmo
                   // host (15–30s depois que o site mostrou checagem anti-robô). Ações internas não esperam.
-                  const touchesPage = ['navigate', 'click_ref', 'click_text', 'click_at', 'fill', 'fill_ref', 'type', 'press', 'select_option', 'check', 'uncheck', 'back', 'forward', 'reload', 'hover', 'dblclick', 'focus', 'drag'].includes(action.type);
+                  const touchesPage = ['navigate', 'click_ref', 'click_text', 'click_at', 'fill', 'fill_ref', 'type', 'press', 'select_option', 'check', 'uncheck', 'back', 'forward', 'reload', 'hover', 'dblclick', 'focus', 'drag', 'scroll', 'upload', 'insert_text', 'keydown', 'keyup'].includes(action.type);
                   const paceHost = action.type === 'navigate' ? hostOf(/^https?:\/\//i.test(String((action as any).url || '')) ? String((action as any).url) : `https://${String((action as any).url || '')}`) : hostOf(observation.url);
                   if (touchesPage && paceHost) {
                     const waitMs = paceDelay(paceHost);
@@ -3753,7 +3760,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                       toolResult = { success: false, error: `No element with ref @${action.ref}` };
                     } else {
                       // FREIO DE SEGURANÇA: pagamento/exclusão/cartão → confirma antes de agir.
-                      const risk = classifyRisk(action.type, target.text, target.placeholder, target.aria);
+                      const risk = classifyRisk(action.type, target.text, target.placeholder, target.aria, riskOpts);
                       let cancelled = false;
                       if (risk) {
                         const ok = await confirmRisky(risk);
@@ -3874,11 +3881,11 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     // FREIO: resolve o rótulo do elemento SOB a coordenada e confirma se for de risco.
                     // Same point that will be clicked — checking anywhere else defeats the gate.
                     const lblAt = await withTimeout(wv.executeJavaScript(`(function(x,y){try{const e=document.elementFromPoint(x,y);if(!e)return '';const t=e.closest('a,button,[role=button],[role=link]')||e;return (t.innerText||t.textContent||t.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim().slice(0,80);}catch(_){return '';}})(${cx},${cy})`), 3000, '');
-                    const cancelAt = await gateRisk(riskForAction(action as any, { text: String(lblAt || '') }));
+                    const cancelAt = await gateRisk(riskForAction(action as any, { text: String(lblAt || '') }, undefined, riskOpts));
                     toolResult = cancelAt ?? await window.electronAPI?.realClick?.(wcId, cx, cy);
                   } else if (action.type === 'click_text' && wcId != null) {
                     // FREIO DE SEGURANÇA: confirma antes de clicar em pagamento/exclusão.
-                    const riskT = classifyRisk('click_text', action.text);
+                    const riskT = classifyRisk('click_text', action.text, undefined, undefined, riskOpts);
                     let cancelledT = false;
                     if (riskT) {
                       const ok = await confirmRisky(riskT);
@@ -3926,7 +3933,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     // FREIO: Enter (press) numa página de checkout pode submeter pagamento.
                     // Esta é a 1ª branch que pega press — sem o gate aqui, o freio do `else`
                     // lá embaixo nunca rodava pra press.
-                    const c = await gateRisk(riskForAction(action as any, undefined, wv?.getURL?.() || ''));
+                    const c = await gateRisk(riskForAction(action as any, undefined, wv?.getURL?.() || '', riskOpts));
                     toolResult = c ?? await window.electronAPI?.realKey?.(wcId, action.key);
                   } else if (action.type === 'plan') {
                     plan = action.steps || [];
@@ -5300,7 +5307,7 @@ Answer with one word: ACTION, PAGE, WEB, or CHAT.`;
                     // inclui o `fill`/`fill_ref` (dado de cartão), que antes escapava porque o
                     // gate só checava `press`. riskForAction devolve null pra ação inofensiva,
                     // então o caminho normal (scroll/click/fill comum) não muda.
-                    const riskCancel = await gateRisk(riskForAction(action as any, undefined, wv.getURL?.() || ''));
+                    const riskCancel = await gateRisk(riskForAction(action as any, undefined, wv.getURL?.() || '', riskOpts));
                     // Bounded: on hung pages any executeJavaScript-based action (scroll,
                     // click_text fallback, fill...) would otherwise never resolve.
                     toolResult = riskCancel ?? await withTimeout(executeBrowserAction(wv, action),
