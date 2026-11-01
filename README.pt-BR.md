@@ -37,6 +37,28 @@
   <a href="https://ollama.com"><img src="https://img.shields.io/badge/Ollama-101010?style=flat-square&logo=ollama&logoColor=white" alt="Ollama" /></a>
 </p>
 
+## 💡 Pra que as pessoas usam o Bah
+
+Um **agente de navegador com IA**, open source, pras partes chatas da web: lê a página, clica, digita,
+envia arquivos e espera como uma pessoa faria, e **pergunta antes de qualquer coisa arriscada** (pagar,
+excluir, enviar formulário, ler seus arquivos ou a área de transferência). Funciona com modelo na nuvem
+ou **100% local** (Ollama ou llama.cpp — testado com `Qwen3-VL-8B` numa GPU de 16 GB).
+
+| Peça… | O que o Bah faz | Status |
+|---|---|---|
+| *"Baixe a ISO mais recente do Ubuntu"* · *"o driver da impressora pro meu Mac"* | Acha o arquivo certo pro **seu** SO e CPU, passa por EULA e seletor de SO, baixa em segundo plano (qualquer tamanho) e informa o caminho; confere checksum | ✅ testado de ponta a ponta |
+| *"Hotel em Nova York até US$ 450 a diária no próximo fim de semana"* | Busca em sites de reserva, escolhe datas no calendário, fecha popups (guarda cupons) e compara preços | ✅ testado (Booking.com) |
+| *"Compare preços deste produto na Amazon e em outras lojas"* · *"carregador compatível com meu notebook"* | Acha o número da peça no site do fabricante e confere várias lojas (novo e usado), com tabela comparativa | ✅ Amazon · 🧪 várias lojas |
+| *"Candidate-se a esta vaga com meu currículo"* | Lê a vaga, escolhe o melhor currículo de uma pasta que **você** libera, anexa, preenche formulários de várias etapas (inclusive dentro de iframes) e para pro seu OK antes de enviar | 🧪 testado em formulários de teste · sites de vaga reais a seguir |
+| *"Quem são os gerentes de compras da Acme?"* | Pesquisa de pessoas no LinkedIn em **modo cuidadoso** — uma página por pedido, sem clique automático | ✅ testado |
+| *"Planeje minha viagem a Tóquio no horário de Tóquio"* | Mostra os sites no fuso do destino e avisa o agente quando a VPN deixa os preços estrangeiros | ✅ testado |
+| *"Salve este recibo em PDF"* · *"print da página inteira"* · *"copie o total"* | Salva em Downloads / copia pra você; ler a área de transferência pede sua permissão | ✅ testado |
+| Atrás de **proxy corporativo** (Blue Coat, PAC, SOCKS) com certificados da empresa | Usa o proxy e os certificados do SO nas páginas **e** nas requisições do próprio Bah; caixa de login do proxy | ✅ testado com proxy com autenticação |
+| *"Monte um carrinho de mercado pra família de quatro"* · buscas agendadas | Carrinhos com vários itens em mercados; tarefas agendadas com aviso de execução perdida | 🛠️ planejado |
+
+✅ testado de ponta a ponta no site real · 🧪 testado em páginas de teste · 🛠️ planejado.
+Quer outro fluxo? O Bah pode **salvar o que funcionou como skill** — ver [CONTRIBUTING-SKILLS.md](CONTRIBUTING-SKILLS.md).
+
 ## 🎬 Demonstração
 
 ![Bah em ação](assets/demo.gif)
@@ -73,7 +95,10 @@
 - **Adblock** completo (EasyList + EasyPrivacy) com bypass automático em sites que quebram (YouTube, Twitch)
 - **Safe Browsing** (lista de hosts maliciosos URLhaus, atualiza diariamente)
 - **Cliques reais de mouse** via Chromium `sendInputEvent` (não synthetic — passa por React, Vue, Angular sem ser ignorado)
-- **Compatibilidade com sites modernos** — se apresenta como Chrome padrão (UA Chrome, mascara `navigator.webdriver`) pra não ser bloqueado por engano
+- **Identidade honesta e consistente** — user agent, client hints e idiomas do Chrome atual definidos dentro do motor (uma fonte só, sem remendo em JavaScript), pra os sites verem um Chrome normal e não bloquearem por engano. Não tenta driblar detecção de robô; sites que proíbem automação ficam em **modo cuidadoso**
+- **Skills de navegação** — receitas curtas `SKILL.md` (popups, calendários, autocomplete, EULAs, seletor de SO, downloads, compras, viagens, pesquisa de pessoas) escolhidas a cada passo; salve as suas depois de uma tarefa que deu certo
+- **Segurança primeiro** — confirma pagamento/exclusão/envio; permissões de site (localização, câmera, microfone, área de transferência) ficam **bloqueadas até você liberar**; upload só usa arquivo que *você* escolhe ou de uma pasta que *você* libera na sessão; diálogos das páginas passam pela caixa do próprio Bah
+- **Redes corporativas** — proxy do sistema/manual/PAC/SOCKS com login, certificados-raiz do SO, proteção contra vazamento por WebRTC, região ciente de VPN e "fuso dos sites"
 - **Overlay visual** estilo Comet — borda pulsante, scan line, ripple no clique, label de status
 
 ---
@@ -112,20 +137,20 @@ USUÁRIO → "abre o gmail e apaga os spams"
 
 ### Ferramentas que a IA pode chamar
 
-| Ação | O que faz |
+O agente responde com uma ação JSON por passo (ou um lote curto). Paridade de comandos com o
+[agent-browser](https://agent-browser.dev/commands), adaptada a um navegador de desktop com a pessoa no controle.
+
+| Grupo | Ações |
 |---|---|
-| `click_ref(N)` | Clica no elemento de id N da lista observada |
-| `fill_ref(N, value)` | Preenche o input N com `value` (e confere se entrou) |
-| `click_text(text)` | Acha por texto visível e clica |
-| `click_at(x, y)` | Clique em coordenada exata (fallback visual) |
-| `type(text)` / `press(key)` | Digita no campo focado / envia uma tecla |
-| `navigate(url)` / `scroll(dir)` | Vai pra URL / rola |
-| `new_tab` / `switch_tab` / `close_tab` | Gerência de abas |
-| `done(reason, success)` | Encerra o loop |
+| **Clicar e digitar** | `click_ref` · `fill_ref` · `click_text` · `click_role` (papel + nome + nth) · `click_at` · `fill` (por rótulo/placeholder) · `type` · `insert_text` · `press` (combinações como `Control+Enter`) · `keydown` / `keyup` · `hover` · `dblclick` · `focus` · `drag` · `check` / `uncheck` · `select_option` |
+| **Ler a página** | lista de elementos (com `frame="…"` pra conteúdo de iframe e marca `disabled`) · `extract_text` · `find` · `look_at` (recorte ampliado) · `get` (valor, marcado, habilitado, visível…) |
+| **Navegar e esperar** | `navigate` · `back` / `forward` / `reload` · `scroll` · `new_tab` / `switch_tab` / `close_tab` · `wait` (`ms`, ou até `text` / `gone` / `url` / `load: "networkidle"`) |
+| **Buscar** | `web_search` (Google → Bing → DuckDuckGo → Yahoo → Perplexity, pulando os que bloqueiam) · `history_search` (pede permissão) |
+| **Arquivos** | `upload` (você escolhe no diálogo do SO) · `list_files` / `read_file` / `upload { file }` (pasta que você libera na sessão) · `download` + `list/cancel/pause/resume/retry_download` · `save_pdf` · `screenshot { full }` |
+| **Diálogos e área de transferência** | `dialog { accept }` (responde o próximo alert/confirm) · `clipboard { write }` · `clipboard { read }` (pede permissão) |
+| **Planejar e concluir** | `plan` · `store` · `suggest_time_zone` (você confirma) · `render_view` (tabela comparativa) · `done(motivo, sucesso)` |
 
-O clique acontece via `webContents.sendInputEvent` no main process — um evento de mouse **real** do Chromium, não synthetic, então sites com React/Vue/anti-bot respondem normal. A IA prefere o caminho **DOM-first** (`click_ref`), com fallback pra texto e depois coordenada.
-
----
+O clique acontece via `webContents.sendInputEvent` no main process — um evento de mouse **real** do Chromium, não synthetic, então sites com React/Vue/anti-bot respondem normal (em iframe de outro site, via CDP `Input` na sessão do frame). A IA prefere o caminho **DOM-first** (`click_ref`), com fallback pra texto e depois coordenada.
 
 ## Como rodar
 
@@ -207,7 +232,7 @@ O agente opera com privilégios de navegador, então vale deixar claro o que ele
 
 - **Limite de 25 passos por comando.** Se a tarefa não concluir em 25 ações, o agente para sozinho.
 
-- **Compatibilidade, não evasão.** A gente se apresenta como Chrome padrão (UA Chrome + mascara `navigator.webdriver`) só pra não ser bloqueado por engano. **Não** resolvemos CAPTCHA de imagem nem driblamos rate-limit. Por padrão o agente para e pede sua ajuda em qualquer verificação humana; uma chave **opcional** no menu (☑️ *Agente pode clicar em captcha de caixinha*, desligada por padrão) deixa ele clicar uma vez numa caixinha simples "Não sou um robô" / "Verifique que você é humano" — quem decide continua sendo o serviço de captcha, e qualquer coisa além disso (desafio de imagem) volta pra você. Respeite os termos de cada site.
+- **Compatibilidade, não evasão.** A gente se apresenta como um Chrome padrão e atual (user agent, client hints e idiomas definidos de forma consistente dentro do motor — sem remendar scripts da página) só pra não ser bloqueado por engano. Sites cujos termos proíbem automação (ex.: LinkedIn) ficam em **modo cuidadoso**: uma página por pedido, sem clique automático. **Não** resolvemos CAPTCHA de imagem nem driblamos rate-limit. Por padrão o agente para e pede sua ajuda em qualquer verificação humana; uma chave **opcional** no menu (☑️ *Agente pode clicar em captcha de caixinha*, desligada por padrão) deixa ele clicar uma vez numa caixinha simples "Não sou um robô" / "Verifique que você é humano" — quem decide continua sendo o serviço de captcha, e qualquer coisa além disso (desafio de imagem) volta pra você. Respeite os termos de cada site.
 
 - **🔑 Login do Google — use o botão "Entrar no Google".** O Google bloqueia login *dentro* de navegadores embutidos (Electron/webview). O Bah resolve do jeito certo: clique em **🔑 Entrar no Google** → ele abre o login no seu **Chrome/Edge real** (onde o Google confia), você loga, e o Bah **detecta sozinho**, importa a sessão (cookies via CDP) e fecha a janela de login. Faça **uma vez** e fica logado.
 
